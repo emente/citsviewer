@@ -968,33 +968,92 @@ map.on("load", () => {
 // WS_URL just means "no faster than POLL_MS", not a broken page.
 let wsReconnectDelayMs = 1000;
 let wsLastTriggeredRefreshAt = 0;
+let wsSocket = null;
+let wsReconnectTimer = null;
+// Bumped on every connectWebSocket() call, including a manual reconnect
+// click. A socket's own listeners capture the generation they were opened
+// under and no-op if it's since been superseded -- otherwise, manually
+// closing a socket to force a reconnect would ALSO trigger that socket's
+// own "close" handler, which would schedule a second, redundant delayed
+// reconnect racing the immediate one the click already started.
+let wsGeneration = 0;
 const WS_REFRESH_THROTTLE_MS = 1000;
 const WS_MAX_RECONNECT_DELAY_MS = 30000;
 
+const wsIndicatorEl = document.getElementById("ws-indicator");
+
+function setWsIndicator(state) {
+	// state: "disabled" | "connecting" | "connected" | "closed"
+	const labels = {
+		disabled: "WebSocket: disabled (no WS_URL configured)",
+		connecting: "WebSocket: connecting…",
+		connected: "WebSocket: connected (live push active)",
+		closed: "WebSocket: not connected (falling back to polling)",
+	};
+	wsIndicatorEl.classList.toggle("connected", state === "connected");
+	wsIndicatorEl.title = (labels[state] || labels.closed) + " -- click to reconnect now";
+}
+setWsIndicator("disabled");
+
 function connectWebSocket() {
-	if (!wsUrl) return;
+	if (!wsUrl) {
+		setWsIndicator("disabled");
+		return;
+	}
+	if (wsReconnectTimer !== null) {
+		clearTimeout(wsReconnectTimer);
+		wsReconnectTimer = null;
+	}
+	const myGeneration = ++wsGeneration;
+	setWsIndicator("connecting");
 	let socket;
 	try {
 		socket = new WebSocket(wsUrl);
 	} catch (err) {
+		setWsIndicator("closed");
 		return;
 	}
+	wsSocket = socket;
 	socket.addEventListener("open", () => {
+		if (myGeneration !== wsGeneration) return;
 		wsReconnectDelayMs = 1000;
+		setWsIndicator("connected");
 	});
 	socket.addEventListener("message", () => {
+		if (myGeneration !== wsGeneration) return;
 		const now = Date.now();
 		if (now - wsLastTriggeredRefreshAt < WS_REFRESH_THROTTLE_MS) return;
 		wsLastTriggeredRefreshAt = now;
 		refresh();
 	});
-	const scheduleReconnect = () => {
-		setTimeout(connectWebSocket, wsReconnectDelayMs);
+	socket.addEventListener("close", () => {
+		if (myGeneration !== wsGeneration) return;
+		wsSocket = null;
+		setWsIndicator("closed");
+		wsReconnectTimer = setTimeout(connectWebSocket, wsReconnectDelayMs);
 		wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 2, WS_MAX_RECONNECT_DELAY_MS);
-	};
-	socket.addEventListener("close", scheduleReconnect);
+	});
 	socket.addEventListener("error", () => socket.close());
 }
+
+// Click the indicator to force a reconnect right now, instead of waiting
+// out whatever backoff delay is currently pending -- stopPropagation so
+// this doesn't also trigger the panel's own collapse/expand click handler
+// (the indicator sits inside that same <h1>).
+wsIndicatorEl.addEventListener("click", (e) => {
+	e.stopPropagation();
+	if (wsReconnectTimer !== null) {
+		clearTimeout(wsReconnectTimer);
+		wsReconnectTimer = null;
+	}
+	wsReconnectDelayMs = 1000;
+	if (wsSocket) {
+		const socket = wsSocket;
+		wsSocket = null;
+		socket.close();
+	}
+	connectWebSocket();
+});
 
 function emptyFC() {
 	return { type: "FeatureCollection", features: [] };

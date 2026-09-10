@@ -90,6 +90,21 @@ html, body {
 	transform: rotate(-90deg);
 }
 
+#ws-indicator {
+	display: inline-block;
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	margin-left: 6px;
+	vertical-align: middle;
+	background: #c53030;
+	cursor: pointer;
+}
+
+#ws-indicator.connected {
+	background: #48bb78;
+}
+
 /* Statistics / Sensors / Layers -- each an independently collapsible
    section with the same header/caret/body pattern as the top panel. */
 .section {
