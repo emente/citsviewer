@@ -24,10 +24,13 @@
 		</div>
 		<div id="devices"></div>
 		<div id="legend">
-			<div class="legend-title">Legend</div>
-			<div class="legend-row"><span class="legend-swatch swatch-car"></span>vehicle (CAM)</div>
-			<div class="legend-row"><span class="legend-swatch swatch-rsu"></span>roadside unit</div>
-			<div class="legend-row"><span class="legend-swatch swatch-hazard"></span>active hazard (DENM)</div>
+			<div class="legend-title">Layers</div>
+			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-vehicles" checked><span class="legend-swatch swatch-car"></span>vehicles (CAM)</label>
+			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-rsu" checked><span class="legend-swatch swatch-rsu"></span>roadside units</label>
+			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-denm" checked><span class="legend-swatch swatch-hazard"></span>active hazards (DENM)</label>
+			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-traffic-lights" checked><span class="legend-swatch swatch-traffic-light"></span>traffic lights (SPATEM)</label>
+			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-geometry" checked><span class="legend-swatch swatch-geometry"></span>lane geometry (MAPEM)</label>
+			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-trailer" checked><span class="legend-swatch swatch-trailer"></span>trailers (CPM)</label>
 		</div>
 	</div>
 </div>

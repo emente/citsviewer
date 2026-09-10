@@ -185,6 +185,21 @@ html, body {
 .swatch-car { background: #2b6cb0; }
 .swatch-rsu { background: #805ad5; }
 .swatch-hazard { background: #c53030; }
+.swatch-traffic-light { background: #48bb78; }
+.swatch-geometry { background: #ed8936; }
+.swatch-trailer { background: #4299e1; }
+
+.layer-toggle {
+	cursor: pointer;
+	user-select: none;
+}
+
+.layer-toggle input[type="checkbox"] {
+	margin: 0;
+	width: 12px;
+	height: 12px;
+	flex: none;
+}
 
 .maplibregl-popup {
 	max-width: 320px !important;

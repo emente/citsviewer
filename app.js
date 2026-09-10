@@ -5,6 +5,7 @@ const POLL_MS = 4000;
 const VIEW_COOKIE = "citsMapView";
 const EXPIRED_HOURS_COOKIE = "citsExpiredHours";
 const PANEL_COLLAPSED_COOKIE = "citsPanelCollapsed";
+const LAYER_VISIBILITY_COOKIE = "citsLayerVisibility";
 const MAX_EXPIRED_HOURS = 48;
 
 function apiUrl() {
@@ -63,6 +64,26 @@ function causeCodeName(c) {
 	return CAUSE_CODES[c] || ("Cause code " + c);
 }
 
+// ETSI TS 103 301 / SAE J2735 MovementPhaseState -- collapsed to the three
+// colors a traffic light actually shows, for the intersection marker.
+const TRAFFIC_LIGHT_COLORS = {
+	"stop-And-Remain": "#e53e3e",
+	"stop-Then-Proceed": "#e53e3e",
+	"pre-Movement": "#ecc94b",
+	"permissive-clearance": "#ecc94b",
+	"protected-clearance": "#ecc94b",
+	"caution-Conflicting-Traffic": "#ecc94b",
+	"permissive-Movement-Allowed": "#48bb78",
+	"protected-Movement-Allowed": "#48bb78",
+	"dark": "#718096",
+	"unavailable": "#718096",
+};
+const TRAFFIC_LIGHT_RANK = { "#e53e3e": 3, "#ecc94b": 2, "#48bb78": 1, "#718096": 0 };
+
+function trafficLightColor(state) {
+	return TRAFFIC_LIGHT_COLORS[state] || "#718096";
+}
+
 // ---------------------------------------------------------------------------
 // Cookie helpers -- used to remember the last map view (center/zoom/bearing/
 // pitch) and filter checkbox state across reloads/visits, instead of
@@ -98,6 +119,48 @@ panelToggle.addEventListener("click", () => {
 	panelEl.classList.toggle("collapsed");
 	writeCookie(PANEL_COLLAPSED_COOKIE, panelEl.classList.contains("collapsed"));
 });
+
+// ---------------------------------------------------------------------------
+// Layer visibility toggles (the vehicles/rsu/denm/traffic-lights/geometry/
+// trailer checkboxes in the legend). Each checkbox controls one or more
+// MapLibre layer ids; state is restored from a cookie and (re)applied once
+// those layers exist, from map.on("load").
+// ---------------------------------------------------------------------------
+
+const LAYER_TOGGLES = {
+	"layer-vehicles": ["stations-vehicle-icons"],
+	"layer-rsu": ["stations-rsu-icons"],
+	"layer-denm": ["hazards-icons"],
+	"layer-traffic-lights": ["traffic-lights-icons"],
+	"layer-geometry": ["geometry-lines"],
+	"layer-trailer": ["trailers-lines"],
+};
+
+const savedLayerVisibility = readCookie(LAYER_VISIBILITY_COOKIE) || {};
+
+function applyLayerVisibility() {
+	for (const [checkboxId, layerIds] of Object.entries(LAYER_TOGGLES)) {
+		const checked = document.getElementById(checkboxId).checked;
+		for (const layerId of layerIds) {
+			if (map.getLayer(layerId)) {
+				map.setLayoutProperty(layerId, "visibility", checked ? "visible" : "none");
+			}
+		}
+	}
+}
+
+for (const checkboxId of Object.keys(LAYER_TOGGLES)) {
+	const checkbox = document.getElementById(checkboxId);
+	if (typeof savedLayerVisibility[checkboxId] === "boolean") {
+		checkbox.checked = savedLayerVisibility[checkboxId];
+	}
+	checkbox.addEventListener("change", () => {
+		const state = {};
+		for (const id of Object.keys(LAYER_TOGGLES)) state[id] = document.getElementById(id).checked;
+		writeCookie(LAYER_VISIBILITY_COOKIE, state);
+		applyLayerVisibility();
+	});
+}
 
 // ---------------------------------------------------------------------------
 // Icon generation (drawn on canvas, registered as map images -- no external
@@ -314,6 +377,43 @@ map.on("load", () => {
 		clusterRadius: 50,
 	});
 	map.addSource("hazards", { type: "geojson", data: emptyFC() });
+	map.addSource("geometry", { type: "geojson", data: emptyFC() });
+	map.addSource("traffic-lights", { type: "geojson", data: emptyFC() });
+	map.addSource("trailers", { type: "geojson", data: emptyFC() });
+
+	map.addLayer({
+		id: "geometry-lines",
+		type: "line",
+		source: "geometry",
+		paint: {
+			"line-color": "#ed8936",
+			"line-width": 3,
+			"line-opacity": 0.85,
+		},
+	});
+
+	map.addLayer({
+		id: "trailers-lines",
+		type: "line",
+		source: "trailers",
+		paint: {
+			"line-color": "#4299e1",
+			"line-width": 5,
+			"line-opacity": 0.8,
+		},
+	});
+
+	map.addLayer({
+		id: "traffic-lights-icons",
+		type: "circle",
+		source: "traffic-lights",
+		paint: {
+			"circle-color": ["get", "color"],
+			"circle-radius": 9,
+			"circle-stroke-width": 2,
+			"circle-stroke-color": "#ffffff",
+		},
+	});
 
 	map.addLayer({
 		id: "stations-clusters",
@@ -349,32 +449,48 @@ map.on("load", () => {
 	// (icon included), not just the label.
 	// Stale/expired items (only present when "show expired" is checked)
 	// render at reduced opacity so live items stay visually dominant.
+	const stationIconLayout = {
+		"icon-image": ["get", "icon"],
+		"icon-size": 0.7,
+		"icon-rotate": ["get", "heading"],
+		"icon-rotation-alignment": "map",
+		"icon-allow-overlap": true,
+		"text-field": ["get", "macShort"],
+		"text-font": ["Noto Sans Regular"],
+		"text-size": 11,
+		"text-offset": [0, 1.2],
+		"text-anchor": "top",
+		"text-allow-overlap": true,
+		"text-optional": true,
+	};
+	const stationIconPaint = {
+		"icon-opacity": ["case", ["get", "isStale"], 0.4, 1],
+		"text-color": "#1a202c",
+		"text-halo-color": "#ffffff",
+		"text-halo-width": 1.4,
+		"text-opacity": ["case", ["get", "isStale"], 0.4, 1],
+	};
+
+	// Split into two layers on the same clustered source -- one per
+	// "vehicles"/"rsu" legend checkbox. Clusters themselves stay mixed (a
+	// cluster can contain both types); an acceptable simplification since
+	// RSUs are rare next to vehicles.
 	map.addLayer({
-		id: "stations-icons",
+		id: "stations-vehicle-icons",
 		type: "symbol",
 		source: "stations",
-		filter: ["!", ["has", "point_count"]],
-		layout: {
-			"icon-image": ["get", "icon"],
-			"icon-size": 0.7,
-			"icon-rotate": ["get", "heading"],
-			"icon-rotation-alignment": "map",
-			"icon-allow-overlap": true,
-			"text-field": ["get", "macShort"],
-			"text-font": ["Noto Sans Regular"],
-			"text-size": 11,
-			"text-offset": [0, 1.2],
-			"text-anchor": "top",
-			"text-allow-overlap": true,
-			"text-optional": true,
-		},
-		paint: {
-			"icon-opacity": ["case", ["get", "isStale"], 0.4, 1],
-			"text-color": "#1a202c",
-			"text-halo-color": "#ffffff",
-			"text-halo-width": 1.4,
-			"text-opacity": ["case", ["get", "isStale"], 0.4, 1],
-		},
+		filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "station_type"], 15]],
+		layout: stationIconLayout,
+		paint: stationIconPaint,
+	});
+
+	map.addLayer({
+		id: "stations-rsu-icons",
+		type: "symbol",
+		source: "stations",
+		filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "station_type"], 15]],
+		layout: stationIconLayout,
+		paint: stationIconPaint,
 	});
 
 	map.addLayer({
@@ -411,13 +527,15 @@ map.on("load", () => {
 		});
 	});
 
-	for (const layerId of ["stations-icons", "hazards-icons", "stations-clusters"]) {
+	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons", "hazards-icons", "stations-clusters", "traffic-lights-icons"]) {
 		map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
 		map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
 	}
-	for (const layerId of ["stations-icons", "hazards-icons"]) {
+	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons", "hazards-icons", "traffic-lights-icons"]) {
 		map.on("click", layerId, (e) => showPopup(e.features[0]));
 	}
+
+	applyLayerVisibility();
 
 	refresh();
 	setInterval(refresh, POLL_MS);
@@ -468,8 +586,129 @@ function stationToFeature(s) {
 			isStale: toBool(s.is_stale),
 			messageCount: s.message_count !== null && s.message_count !== undefined ? parseInt(s.message_count, 10) : null,
 			messagesLast5Min: s.messages_last_5min !== null && s.messages_last_5min !== undefined ? parseInt(s.messages_last_5min, 10) : null,
+			trailer_json: s.trailer_json || null,
 		},
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Geometry / traffic-light / trailer feature builders
+// ---------------------------------------------------------------------------
+
+function intersectionToLineFeatures(isec) {
+	const lanes = safeParseJson(isec.lanes_json) || [];
+	const features = [];
+	for (const lane of lanes) {
+		if (!lane.points || lane.points.length < 2) continue;
+		features.push({
+			type: "Feature",
+			geometry: { type: "LineString", coordinates: lane.points },
+			properties: {
+				kind: "geometry",
+				intersection_id: isec.intersection_id,
+				region: isec.region,
+				lane_id: lane.lane_id,
+				lane_name: lane.name,
+			},
+		});
+	}
+	return features;
+}
+
+// One row per (intersection, signal group) from the API; grouped here into
+// one map marker per intersection, colored by the worst-case group (red
+// beats yellow beats green) since a single point can't show every group's
+// state at once -- the full per-group breakdown is left for the popup.
+function trafficLightsToFeatures(rows) {
+	const byIntersection = new Map();
+	for (const row of rows) {
+		const key = row.region + "/" + row.intersection_id;
+		if (!byIntersection.has(key)) {
+			byIntersection.set(key, {
+				intersection_id: row.intersection_id,
+				region: row.region,
+				name: row.intersection_name,
+				latitude_deg: row.latitude_deg,
+				longitude_deg: row.longitude_deg,
+				groups: [],
+			});
+		}
+		byIntersection.get(key).groups.push(row);
+	}
+	const features = [];
+	for (const isec of byIntersection.values()) {
+		let color = "#718096";
+		for (const g of isec.groups) {
+			const c = trafficLightColor(g.event_state);
+			if (TRAFFIC_LIGHT_RANK[c] > TRAFFIC_LIGHT_RANK[color]) color = c;
+		}
+		features.push({
+			type: "Feature",
+			geometry: { type: "Point", coordinates: [parseFloat(isec.longitude_deg), parseFloat(isec.latitude_deg)] },
+			properties: {
+				kind: "traffic-light",
+				intersection_id: isec.intersection_id,
+				region: isec.region,
+				name: isec.name,
+				color,
+				groups: JSON.stringify(isec.groups),
+			},
+		});
+	}
+	return features;
+}
+
+// Great-circle destination point -- used to place a trailer relative to
+// its towing vehicle's position/heading, in metres.
+function destinationPoint(lat, lon, bearingDeg, distanceM) {
+	const R = 6371000;
+	const bearing = (bearingDeg * Math.PI) / 180;
+	const lat1 = (lat * Math.PI) / 180;
+	const lon1 = (lon * Math.PI) / 180;
+	const dOverR = distanceM / R;
+	const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dOverR) + Math.cos(lat1) * Math.sin(dOverR) * Math.cos(bearing));
+	const lon2 = lon1 + Math.atan2(
+		Math.sin(bearing) * Math.sin(dOverR) * Math.cos(lat1),
+		Math.cos(dOverR) - Math.sin(lat1) * Math.sin(lat2)
+	);
+	return [(lon2 * 180) / Math.PI, (lat2 * 180) / Math.PI];
+}
+
+// Approximate visualization only: TrailerData carries the hitch offset and
+// the trailer's own front/rear overhang (distance from its reference point
+// to its extremities) but no explicit trailer length, so the body is drawn
+// as a line from the hitch point spanning front+rear overhang along the
+// trailer's own heading (vehicle heading adjusted by the reported hitch
+// angle) -- enough to show where a trailer is and roughly how it's
+// articulated, not an exact outline.
+function trailersToFeatures(stations) {
+	const features = [];
+	for (const s of stations) {
+		const trailers = safeParseJson(s.trailer_json);
+		if (!trailers || !trailers.length) continue;
+		const lat = parseFloat(s.latitude_deg);
+		const lon = parseFloat(s.longitude_deg);
+		const heading = s.heading_deg !== null && s.heading_deg !== undefined ? parseFloat(s.heading_deg) : 0;
+		for (const t of trailers) {
+			const reverseBearing = (heading + 180) % 360;
+			const hitch = destinationPoint(lat, lon, reverseBearing, t.hitch_point_offset_m || 0);
+			const trailerHeading = (heading + (t.hitch_angle_deg || 0) + 360) % 360;
+			const bodyLength = (t.front_overhang_m || 0) + (t.rear_overhang_m || 0);
+			if (bodyLength <= 0) continue;
+			const back = destinationPoint(hitch[1], hitch[0], (trailerHeading + 180) % 360, bodyLength);
+			features.push({
+				type: "Feature",
+				geometry: { type: "LineString", coordinates: [hitch, back] },
+				properties: {
+					kind: "trailer",
+					station_id: s.station_id,
+					trailer_width_m: t.trailer_width_m,
+					hitch_angle_deg: t.hitch_angle_deg,
+				},
+			});
+		}
+	}
+	return features;
 }
 
 function hazardToFeature(h) {
@@ -516,9 +755,15 @@ async function refresh() {
 
 	const stationFeatures = data.stations.map(stationToFeature);
 	const hazardFeatures = data.hazards.map(hazardToFeature);
+	const geometryFeatures = (data.intersections || []).flatMap(intersectionToLineFeatures);
+	const trafficLightFeatures = trafficLightsToFeatures(data.traffic_lights || []);
+	const trailerFeatures = trailersToFeatures(data.stations || []);
 
 	map.getSource("stations").setData({ type: "FeatureCollection", features: stationFeatures });
 	map.getSource("hazards").setData({ type: "FeatureCollection", features: hazardFeatures });
+	map.getSource("geometry").setData({ type: "FeatureCollection", features: geometryFeatures });
+	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
+	map.getSource("trailers").setData({ type: "FeatureCollection", features: trailerFeatures });
 
 	const liveStations = stationFeatures.filter((f) => !f.properties.isStale).length;
 	const liveHazards = hazardFeatures.filter((f) => !f.properties.isExpired).length;
@@ -529,11 +774,12 @@ async function refresh() {
 	document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
 	renderDevices(data.devices || []);
 
-	if (!hasFitBounds && (stationFeatures.length > 0 || hazardFeatures.length > 0)) {
+	if (!hasFitBounds && (stationFeatures.length > 0 || hazardFeatures.length > 0 || trafficLightFeatures.length > 0)) {
 		hasFitBounds = true;
 		const bounds = new maplibregl.LngLatBounds();
 		for (const f of stationFeatures) bounds.extend(f.geometry.coordinates);
 		for (const f of hazardFeatures) bounds.extend(f.geometry.coordinates);
+		for (const f of trafficLightFeatures) bounds.extend(f.geometry.coordinates);
 		map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
 	}
 }
@@ -678,6 +924,26 @@ function prettyJson(raw) {
 	}
 }
 
+function safeParseJson(raw) {
+	if (!raw) return null;
+	try {
+		return JSON.parse(raw);
+	} catch (e) {
+		return null;
+	}
+}
+
+function trailerSummary(raw) {
+	const trailers = safeParseJson(raw);
+	if (!trailers || !trailers.length) return "-";
+	return trailers.map((t) => {
+		const parts = [];
+		if (t.trailer_width_m !== null && t.trailer_width_m !== undefined) parts.push(fmt(t.trailer_width_m, "m wide", 1));
+		if (t.hitch_angle_deg !== null && t.hitch_angle_deg !== undefined) parts.push(fmt(t.hitch_angle_deg, "° hitch angle", 0));
+		return parts.length ? parts.join(", ") : "present";
+	}).join("; ");
+}
+
 function stationPopupHtml(p) {
 	const rows = [
 		["Station ID", p.station_id],
@@ -689,6 +955,7 @@ function stationPopupHtml(p) {
 		["Altitude", p.altitude_m !== null ? fmt(p.altitude_m, "m", 1) : "-"],
 		["Size", (p.vehicle_length_m || p.vehicle_width_m) ? `${fmt(p.vehicle_length_m, "m", 1)} x ${fmt(p.vehicle_width_m, "m", 1)}` : "-"],
 		["Position", `${p.latitude_deg}, ${p.longitude_deg}`],
+		["Trailer", trailerSummary(p.trailer_json)],
 		["Device", escapeHtml(p.device_id)],
 		["First seen", relTime(p.first_seen)],
 		["Last seen", relTime(p.last_seen)],
@@ -728,10 +995,25 @@ function hazardPopupHtml(p) {
 	</div>`;
 }
 
+function trafficLightPopupHtml(p) {
+	const groups = safeParseJson(p.groups) || [];
+	const rows = groups.map((g) => {
+		const label = (g.event_state || "unknown").replace(/-/g, " ");
+		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label)];
+	});
+	return `<div class="cits-popup">
+		<h3>&#128678; ${escapeHtml(p.name || "Intersection " + p.intersection_id)}</h3>
+		<table>${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("")}</table>
+	</div>`;
+}
+
 function showPopup(feature) {
 	if (popup) popup.remove();
 	const p = feature.properties;
-	const html = p.kind === "hazard" ? hazardPopupHtml(p) : stationPopupHtml(p);
+	let html;
+	if (p.kind === "hazard") html = hazardPopupHtml(p);
+	else if (p.kind === "traffic-light") html = trafficLightPopupHtml(p);
+	else html = stationPopupHtml(p);
 	popup = new maplibregl.Popup({ maxWidth: "320px" })
 		.setLngLat(feature.geometry.coordinates)
 		.setHTML(html)

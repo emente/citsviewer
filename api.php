@@ -60,7 +60,7 @@ $stations = [];
 $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
                s.latitude_deg, s.longitude_deg, s.altitude_m,
                s.heading_deg, s.speed_m_s, s.vehicle_length_m, s.vehicle_width_m,
-               s.first_seen, s.last_seen,
+               s.trailer_json, s.first_seen, s.last_seen,
                (s.last_seen <= (UTC_TIMESTAMP() - INTERVAL ? SECOND)) AS is_stale,
                im.source_mac, im.message_type AS latest_message_type,
                im.protocol_version, im.decoded_json,
@@ -110,6 +110,41 @@ if ($stmt = $l->prepare($sql)) {
 	}
 	$stmt->execute();
 	$hazards = fetchAll($stmt->get_result());
+	$stmt->close();
+} else {
+	$schemaMissing = true;
+}
+
+// Intersection / lane geometry from MAPEM (the "geometry" layer). These
+// barely ever change once an RSU has broadcast them, so unlike
+// stations/hazards this isn't gated by $staleSeconds/$windowSeconds -- every
+// known intersection is returned.
+$intersections = [];
+$res = $l->query("SELECT intersection_id, region, name, revision,
+                          latitude_deg, longitude_deg, altitude_m, lanes_json,
+                          first_received_at, last_received_at
+                   FROM intersections");
+if ($res === false) {
+	$schemaMissing = true;
+} else {
+	$intersections = fetchAll($res);
+}
+
+// Current signal state per (intersection, signal group), positioned via the
+// matching `intersections` row (MAPEM) -- a signal group with no known
+// intersection geometry yet simply doesn't appear here (inner join).
+$trafficLights = [];
+$sql = "SELECT t.intersection_id, t.region, t.signal_group, t.event_state,
+               t.min_end_time, t.max_end_time, t.likely_end_time,
+               t.device_id, t.station_id, t.last_received_at,
+               i.name AS intersection_name, i.latitude_deg, i.longitude_deg
+        FROM traffic_light_states t
+        JOIN intersections i ON i.region = t.region AND i.intersection_id = t.intersection_id
+        WHERE t.last_received_at > (UTC_TIMESTAMP() - INTERVAL ? SECOND)";
+if ($stmt = $l->prepare($sql)) {
+	$stmt->bind_param('i', $staleSeconds);
+	$stmt->execute();
+	$trafficLights = fetchAll($stmt->get_result());
 	$stmt->close();
 } else {
 	$schemaMissing = true;
@@ -167,6 +202,8 @@ $out = [
 	'expired_hours' => $expiredHours,
 	'stations' => $stations,
 	'hazards' => $hazards,
+	'intersections' => $intersections,
+	'traffic_lights' => $trafficLights,
 	'devices' => $devices,
 ];
 if ($schemaMissing) {
