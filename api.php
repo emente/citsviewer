@@ -63,7 +63,7 @@ $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
                s.trailer_json, s.first_seen, s.last_seen,
                (s.last_seen <= (UTC_TIMESTAMP() - INTERVAL ? SECOND)) AS is_stale,
                im.source_mac, im.message_type AS latest_message_type,
-               im.protocol_version, im.decoded_json,
+               im.protocol_version, im.decoded_json, im.gn_json,
                (SELECT COUNT(*) FROM cam_messages cm WHERE cm.station_id = s.station_id) AS message_count,
                (SELECT COUNT(*) FROM cam_messages cm WHERE cm.station_id = s.station_id
                    AND cm.received_at > (UTC_TIMESTAMP() - INTERVAL 5 MINUTE)) AS messages_last_5min
@@ -85,12 +85,12 @@ if ($stmt = $l->prepare($sql)) {
 }
 
 // Recent-course trails: last 5 minutes of CAM positions for every station,
-// so the frontend can draw a short trail behind currently-moving vehicles
-// ("currently moving" -- speed_m_s > 0 from the `stations` query above --
-// is the frontend's own decision; this just supplies the raw recent
-// history to draw from). Fixed at 5 minutes regardless of $staleSeconds/
-// expired-hours, which are a separate concern (what counts as "live" and
-// how far back to show already-expired items).
+// so the frontend can draw a short trail behind vehicles whose recent
+// positions actually show movement (that judgment -- total path length,
+// not a single speed_m_s sample -- is the frontend's own, see
+// courseFeatures() in app.js). Fixed at 5 minutes regardless of
+// $staleSeconds/expired-hours, which are a separate concern (what counts
+// as "live" and how far back to show already-expired items).
 $courses = [];
 $res = $l->query("SELECT station_id, longitude_deg, latitude_deg, received_at
                    FROM cam_messages
@@ -132,7 +132,7 @@ $sql = "SELECT d.originating_station_id, d.sequence_number, d.device_id, d.stati
                d.latitude_deg, d.longitude_deg, d.altitude_m, d.decoded_json,
                d.first_received_at, d.last_received_at,
                (NOT d.is_active OR (d.expires_at IS NOT NULL AND d.expires_at <= UTC_TIMESTAMP())) AS is_expired,
-               im.source_mac
+               im.source_mac, im.gn_json
         FROM denm_events d
         LEFT JOIN its_messages im ON im.id = (
             SELECT im2.id FROM its_messages im2

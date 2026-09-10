@@ -41,6 +41,15 @@ function stationTypeInfo(t) {
 }
 
 // ETSI TS 102894-2 CauseCodeType -- common subset, best-effort labels.
+//
+// Codes 91-95 here were previously off by the "reserved" gap the real enum
+// has between 27 and 91 handled wrong: the actual assignment is
+// vehicleBreakdown(91), postCrash(92), humanProblem(93), stationaryVehicle
+// (94), emergencyVehicleApproaching(95), hazardousLocation-DangerousCurve
+// (96), collisionRisk(97), signalViolation(98), dangerousSituation(99),
+// railwayLevelCrossing(100) -- confirmed against cdd_1_3_1_1.asn's
+// CauseCodeType and cdd_2_2_1.asn's CauseCodeChoice in mqtt-bridge/asn1.
+// publicTransportVehicleApproaching is cause code 28, not 95.
 const CAUSE_CODES = {
 	1: "Traffic Condition", 2: "Accident", 3: "Roadworks",
 	6: "Adverse Weather Condition - Adhesion",
@@ -56,16 +65,61 @@ const CAUSE_CODES = {
 	20: "Violence",
 	26: "Slow Vehicle",
 	27: "Dangerous End Of Queue",
-	91: "Collision Risk",
-	92: "Signal Violation",
-	93: "Dangerous Situation",
-	94: "Railway Level Crossing",
-	95: "Public Transport Vehicle Approaching",
+	28: "Public Transport Vehicle Approaching",
+	91: "Vehicle Breakdown",
+	92: "Post-Crash",
+	93: "Human Problem",
+	94: "Stationary Vehicle",
+	95: "Emergency Vehicle Approaching",
+	96: "Hazardous Location - Dangerous Curve",
+	97: "Collision Risk",
+	98: "Signal Violation",
+	99: "Dangerous Situation",
+	100: "Railway Level Crossing",
 };
 
 function causeCodeName(c) {
 	if (c === null || c === undefined) return null;
 	return CAUSE_CODES[c] || ("Cause code " + c);
+}
+
+// SubCauseCode*, keyed by cause code -- same source (mqtt-bridge/asn1's
+// cdd_1_3_1_1.asn / cdd_2_2_1.asn) as CAUSE_CODES above. Only covers cause
+// codes that have a named sub-cause enum at all (several, like Violence(20)
+// and Public Transport Vehicle Approaching(28), are just a bare integer
+// with no ETSI-assigned meanings).
+const SUB_CAUSE_CODES = {
+	1: { 0: "unavailable", 1: "increased volume of traffic", 2: "traffic jam slowly increasing", 3: "traffic jam increasing", 4: "traffic jam strongly increasing", 5: "traffic stationary", 6: "traffic jam slightly decreasing", 7: "traffic jam decreasing", 8: "traffic jam strongly decreasing" },
+	2: { 0: "unavailable", 1: "multi-vehicle accident", 2: "heavy accident", 3: "accident involving a lorry", 4: "accident involving a bus", 5: "accident involving hazardous materials", 6: "accident on opposite lane", 7: "unsecured accident", 8: "assistance requested" },
+	3: { 0: "unavailable", 1: "major roadworks", 2: "road marking work", 3: "slow-moving road maintenance", 4: "short-term stationary roadworks", 5: "street cleaning", 6: "winter service" },
+	6: { 0: "unavailable", 1: "heavy frost on road", 2: "fuel on road", 3: "mud on road", 4: "snow on road", 5: "ice on road", 6: "black ice on road", 7: "oil on road", 8: "loose chippings", 9: "instant black ice", 10: "roads salted" },
+	9: { 0: "unavailable", 1: "rockfalls", 2: "earthquake damage", 3: "sewer collapse", 4: "subsidence", 5: "snow drifts", 6: "storm damage", 7: "burst pipe", 8: "volcano eruption", 9: "falling ice" },
+	10: { 0: "unavailable", 1: "shed load", 2: "parts of vehicles", 3: "parts of tyres", 4: "big objects", 5: "fallen trees", 6: "hub caps", 7: "waiting vehicles" },
+	11: { 0: "unavailable", 1: "wild animals", 2: "herd of animals", 3: "small animals", 4: "large animals" },
+	12: { 0: "unavailable", 1: "children on roadway", 2: "cyclist on roadway", 3: "motorcyclist on roadway" },
+	14: { 0: "unavailable", 1: "wrong lane", 2: "wrong direction" },
+	15: { 0: "unavailable", 1: "emergency vehicles", 2: "rescue helicopter landing", 3: "police activity ongoing", 4: "medical emergency ongoing", 5: "child abduction in progress" },
+	17: { 0: "unavailable", 1: "strong winds", 2: "damaging hail", 3: "hurricane", 4: "thunderstorm", 5: "tornado", 6: "blizzard" },
+	18: { 0: "unavailable", 1: "fog", 2: "smoke", 3: "heavy snowfall", 4: "heavy rain", 5: "heavy hail", 6: "low sun glare", 7: "sandstorms", 8: "swarms of insects" },
+	19: { 0: "unavailable", 1: "heavy rain", 2: "heavy snowfall", 3: "soft hail" },
+	26: { 0: "unavailable", 1: "maintenance vehicle", 2: "vehicles slowing to look at accident", 3: "abnormal load", 4: "abnormal wide load", 5: "convoy", 6: "snowplough", 7: "de-icing", 8: "salting vehicles" },
+	27: { 0: "unavailable", 1: "sudden end of queue", 2: "queue over hill", 3: "queue around bend", 4: "queue in tunnel" },
+	91: { 0: "unavailable", 1: "lack of fuel", 2: "lack of battery power", 3: "engine problem", 4: "transmission problem", 5: "engine cooling problem", 6: "braking system problem", 7: "steering problem", 8: "tyre puncture", 9: "tyre pressure problem" },
+	92: { 0: "unavailable", 1: "accident without eCall triggered", 2: "accident with eCall manually triggered", 3: "accident with eCall automatically triggered", 4: "accident with eCall triggered, no cellular network access" },
+	93: { 0: "unavailable", 1: "glycemia problem", 2: "heart problem" },
+	94: { 0: "unavailable", 1: "human problem", 2: "vehicle breakdown", 3: "post-crash", 4: "public transport stop", 5: "carrying dangerous goods" },
+	95: { 0: "unavailable", 1: "emergency vehicle approaching", 2: "prioritized vehicle approaching" },
+	96: { 0: "unavailable", 1: "dangerous left turn curve", 2: "dangerous right turn curve", 3: "multiple curves, unknown first direction", 4: "multiple curves starting left", 5: "multiple curves starting right" },
+	97: { 0: "unavailable", 1: "longitudinal collision risk", 2: "crossing collision risk", 3: "lateral collision risk", 4: "vulnerable road user" },
+	98: { 0: "unavailable", 1: "stop sign violation", 2: "traffic light violation", 3: "turning regulation violation" },
+	99: { 0: "unavailable", 1: "emergency electronic brake engaged", 2: "pre-crash system engaged", 3: "ESP engaged", 4: "ABS engaged", 5: "AEB engaged", 6: "brake warning engaged", 7: "collision risk warning engaged" },
+	100: { 0: "unavailable", 1: "do not cross, abnormal situation", 2: "closed", 3: "unguarded", 4: "nominal" },
+};
+
+function subCauseCodeName(causeCode, subCauseCode) {
+	if (subCauseCode === null || subCauseCode === undefined) return null;
+	const table = SUB_CAUSE_CODES[causeCode];
+	return (table && table[subCauseCode]) || ("sub-cause " + subCauseCode);
 }
 
 // ETSI TS 103 301 / SAE J2735 MovementPhaseState -- collapsed to the three
@@ -152,7 +206,7 @@ for (const sectionId of ["stats-section", "devices-section", "legend", "display-
 const LAYER_TOGGLES = {
 	"layer-vehicles": ["stations-vehicle-icons", "vehicle-courses-lines"],
 	"layer-rsu": ["stations-rsu-icons"],
-	"layer-denm": ["hazards-icons"],
+	"layer-denm": ["hazards-icons", "denm-queue-trace-lines"],
 	"layer-traffic-lights": ["traffic-lights-icons"],
 	"layer-geometry": ["geometry-lines"],
 	"layer-trailer": ["trailers-lines"],
@@ -496,7 +550,7 @@ function setStationsClustering(enabled) {
 const FOCUS_HIDE_LAYERS = [
 	"geometry-lines", "trailers-lines", "traffic-lights-icons", "heatmap-layer",
 	"stations-clusters", "stations-cluster-count", "stations-vehicle-icons",
-	"stations-rsu-icons", "hazards-icons", "vehicle-courses-lines",
+	"stations-rsu-icons", "hazards-icons", "vehicle-courses-lines", "denm-queue-trace-lines",
 ];
 
 let focusedStationId = null;
@@ -571,6 +625,7 @@ map.on("load", () => {
 	// Hazards never cluster -- they're safety-critical and typically few,
 	// so each one should always show individually.
 	map.addSource("hazards", { type: "geojson", data: emptyFC() });
+	map.addSource("denm-queue-trace", { type: "geojson", data: emptyFC() });
 	map.addSource("geometry", { type: "geojson", data: emptyFC() });
 	map.addSource("traffic-lights", { type: "geojson", data: emptyFC() });
 	map.addSource("trailers", { type: "geojson", data: emptyFC() });
@@ -703,6 +758,21 @@ map.on("load", () => {
 		if (heatmapCheckbox.checked) refresh();
 	});
 
+	// Traffic-Condition/queue-type DENM extent trace -- see
+	// denmQueueTraceFeatures() for the exact field this comes from and the
+	// caveat on its chaining direction.
+	map.addLayer({
+		id: "denm-queue-trace-lines",
+		type: "line",
+		source: "denm-queue-trace",
+		paint: {
+			"line-color": "#c53030",
+			"line-width": 3,
+			"line-opacity": 0.6,
+			"line-dasharray": [1, 1],
+		},
+	});
+
 	map.addLayer({
 		id: "hazards-icons",
 		type: "symbol",
@@ -799,6 +869,7 @@ function stationToFeature(s) {
 			latitude_deg: s.latitude_deg,
 			longitude_deg: s.longitude_deg,
 			decoded_json: s.decoded_json,
+			gn_json: s.gn_json,
 			isStale: toBool(s.is_stale),
 			messageCount: s.message_count !== null && s.message_count !== undefined ? parseInt(s.message_count, 10) : null,
 			messagesLast5Min: s.messages_last_5min !== null && s.messages_last_5min !== undefined ? parseInt(s.messages_last_5min, 10) : null,
@@ -927,24 +998,92 @@ function trailersToFeatures(stations) {
 	return features;
 }
 
-// Recent-course trails: one polyline per currently-moving vehicle, from its
-// last 5 minutes of CAM positions (data.courses -- see api.php, unrelated
-// to the on-demand full-history focus-mode trail). Only stations present in
-// `movingStationIds` (computed by the caller from live, non-stale,
-// speed_m_s > 0 stations) get a line -- a station that has just stopped
-// still has recent rows in data.courses, but showing its trail once it's no
-// longer moving would be misleading.
-function courseFeatures(courses, movingStationIds) {
+// Great-circle distance in metres -- used to tell an actually-moving
+// vehicle's trail from GPS jitter on a parked one (see courseFeatures).
+function haversineMeters(a, b) {
+	const R = 6371000;
+	const toRad = (d) => (d * Math.PI) / 180;
+	const dLat = toRad(b[1] - a[1]);
+	const dLon = toRad(b[0] - a[0]);
+	const s = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a[1])) * Math.cos(toRad(b[1])) * Math.sin(dLon / 2) ** 2;
+	return 2 * R * Math.asin(Math.sqrt(s));
+}
+
+// Recent-course trails: one polyline per vehicle that has actually moved in
+// the last 5 minutes of CAM positions (data.courses -- see api.php,
+// unrelated to the on-demand full-history focus-mode trail).
+//
+// "Moving" is judged from the trail's own total path length, not from the
+// station's single latest reported speed_m_s -- that one instantaneous
+// sample is unreliable (a station passing through very briefly may have
+// its last-captured packet happen to read near zero, or simply never gets
+// a speed reading at all if the sniffer only catches part of its transit),
+// and excluded plenty of real, fast passes. A parked vehicle still sends
+// CAMs with jittering GPS noise, so a small minimum path length filters
+// that out without needing speed_m_s at all.
+const MIN_COURSE_LENGTH_M = 8;
+
+function courseFeatures(courses) {
 	const byStation = new Map();
 	for (const row of courses) {
-		if (!movingStationIds.has(row.station_id)) continue;
 		if (!byStation.has(row.station_id)) byStation.set(row.station_id, []);
 		byStation.get(row.station_id).push([parseFloat(row.longitude_deg), parseFloat(row.latitude_deg)]);
 	}
 	const features = [];
 	for (const [stationId, coords] of byStation) {
-		if (coords.length > 1) {
-			features.push({ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { station_id: stationId } });
+		if (coords.length < 2) continue;
+		let length = 0;
+		for (let i = 1; i < coords.length; i++) length += haversineMeters(coords[i - 1], coords[i]);
+		if (length < MIN_COURSE_LENGTH_M) continue;
+		features.push({ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { station_id: stationId } });
+	}
+	return features;
+}
+
+// DENM's `location.detectionZonesToEventPosition` (a "Traces" -- a list of
+// path chains) traces the physical extent of the hazard/queue behind the
+// event position: each PathPoint is a {deltaLatitude, deltaLongitude}
+// offset in the same 1e-7-degree units as absolute lat/lon (DeltaLatitude/
+// DeltaLongitude in cdd_2_2_1.asn), chained the same way CAM's own
+// pathHistory and MAPEM's NodeXY lane geometry are -- each point offset
+// from the previous one, the first offset from the event position itself.
+// Only the first trace (traces[0]) is drawn; a DENM can carry up to 7 but
+// one is enough to show the queue's shape and extent. NOTE: unlike the
+// MAPEM node-offset direction (verified against real captured traffic
+// earlier in this project), this chaining/sign convention for DENM path
+// history is inferred from the well-documented general ITS pattern, not
+// verified against a known-correct rendering -- if the drawn line looks
+// mirrored or points the wrong way relative to the hazard, that's the
+// first thing to check.
+const DELTA_UNAVAILABLE = 131072;
+
+function denmQueueTraceFeatures(hazardFeatures) {
+	const features = [];
+	for (const f of hazardFeatures) {
+		const p = f.properties;
+		const decoded = safeParseJson(p.decoded_json);
+		const location = decoded && decoded.denm && decoded.denm.location;
+		const trace = location && location.detectionZonesToEventPosition && location.detectionZonesToEventPosition[0];
+		if (!trace || !trace.length) continue;
+
+		let lat = parseFloat(p.latitude_deg);
+		let lon = parseFloat(p.longitude_deg);
+		const points = [[lon, lat]];
+		for (const pathPoint of trace) {
+			const pos = pathPoint.pathPosition || {};
+			const dLat = pos.deltaLatitude;
+			const dLon = pos.deltaLongitude;
+			if (dLat === undefined || dLon === undefined || dLat === DELTA_UNAVAILABLE || dLon === DELTA_UNAVAILABLE) break;
+			lat -= dLat / 1e7;
+			lon -= dLon / 1e7;
+			points.push([lon, lat]);
+		}
+		if (points.length > 1) {
+			features.push({
+				type: "Feature",
+				geometry: { type: "LineString", coordinates: points },
+				properties: { originating_station_id: p.originating_station_id, sequence_number: p.sequence_number },
+			});
 		}
 	}
 	return features;
@@ -973,6 +1112,7 @@ function hazardToFeature(h) {
 			longitude_deg: h.longitude_deg,
 			altitude_m: h.altitude_m,
 			decoded_json: h.decoded_json,
+			gn_json: h.gn_json,
 			isExpired: toBool(h.is_expired),
 		},
 	};
@@ -1040,13 +1180,11 @@ async function refresh() {
 		geometry: { type: "Point", coordinates: p },
 		properties: {},
 	}));
-	const movingStationIds = new Set(
-		stationFeatures.filter((f) => !f.properties.isStale && f.properties.speed_m_s > 0).map((f) => f.properties.station_id)
-	);
-	const courseFeaturesList = courseFeatures(data.courses || [], movingStationIds);
+	const courseFeaturesList = courseFeatures(data.courses || []);
 
 	map.getSource("stations").setData({ type: "FeatureCollection", features: stationFeatures });
 	map.getSource("hazards").setData({ type: "FeatureCollection", features: hazardFeatures });
+	map.getSource("denm-queue-trace").setData({ type: "FeatureCollection", features: denmQueueTraceFeatures(hazardFeatures) });
 	map.getSource("geometry").setData({ type: "FeatureCollection", features: geometryFeatures });
 	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
 	map.getSource("trailers").setData({ type: "FeatureCollection", features: trailerFeatures });
@@ -1266,6 +1404,132 @@ function trailerSummary(raw) {
 	}).join("; ");
 }
 
+// ---------------------------------------------------------------------------
+// Security status (IEEE 1609.2 GeoNetworking-layer signature presence).
+//
+// What this can and can't tell you: mqtt-bridge's its_1609dot2.py is a
+// narrow, hand-rolled COER reader that recovers the plaintext payload out
+// of a signed envelope -- it deliberately never reads the `signer`
+// (certificate / certificate digest) or `signature` fields at all (see
+// that module's own docstring), so there is no cryptographic verification
+// happening anywhere in this pipeline. This can only ever report "Missing"
+// (genuinely unsecured -- Ieee1609Dot2Content chose unsecuredData) or
+// "Signed" (a SignedData envelope with a certificate + signature IS
+// present), never "valid" (would need to parse the signer's certificate
+// and verify the ECDSA signature over ToBeSignedData) or "trusted" (would
+// additionally need a real PKI root-of-trust/CTL to validate the
+// certificate chain against) -- both are unimplemented, not just hidden.
+// ---------------------------------------------------------------------------
+
+function securityStatus(gnJsonRaw) {
+	const gn = safeParseJson(gnJsonRaw);
+	if (!gn) return null;
+	if (!gn.secured) return { label: "Missing (unsecured)", title: "No IEEE 1609.2 signature envelope at all." };
+	const info = gn.secured_info || {};
+	if (info.error) return { label: "Secured, undecodable", title: "Envelope present but this bridge's decoder rejected it: " + info.error };
+	const contentType = info.content_type;
+	if (contentType === "encryptedData") {
+		return { label: "Encrypted", title: "IEEE 1609.2 encryptedData -- not a plain signature, payload isn't recoverable without key material." };
+	}
+	if (contentType === "signedData") {
+		return {
+			label: "Signed (not verified)",
+			title: "A certificate + signature are present, but this project never parses or cryptographically verifies them -- "
+				+ "no claim is made about the signature's validity or the certificate's trust chain.",
+		};
+	}
+	return { label: "Secured (" + (contentType || "unknown") + ")", title: "" };
+}
+
+function securityStatusRow(gnJsonRaw) {
+	const s = securityStatus(gnJsonRaw);
+	if (!s) return ["Security", "-"];
+	return ["Security", `<span class="badge" title="${escapeHtml(s.title)}">${escapeHtml(s.label)}</span>`];
+}
+
+// ---------------------------------------------------------------------------
+// CAM vehicle/RSU "additional data" (pedals, cruise control, turn signals,
+// lane position, steering angle, vehicle role, RSU protected zones) --
+// pulled straight out of the already-fetched decoded_json client-side, the
+// same way the DENM queue trace is, rather than adding new columns for
+// fields the popup only needs to display, not query on.
+// ---------------------------------------------------------------------------
+
+// BIT STRING fields decode (via mqtt-bridge's to_jsonable) as {bits, hex};
+// names[i] is the named bit at ASN.1 bit position i (MSB-first per octet).
+function bitStringFlags(bitObj, names) {
+	if (!bitObj || typeof bitObj.hex !== "string") return null;
+	const bytes = (bitObj.hex.match(/.{2}/g) || []).map((h) => parseInt(h, 16));
+	const flags = {};
+	names.forEach((name, i) => {
+		const byte = bytes[Math.floor(i / 8)] || 0;
+		flags[name] = ((byte >> (7 - (i % 8))) & 1) === 1;
+	});
+	return flags;
+}
+
+const ACCELERATION_CONTROL_BITS = [
+	["brakePedalEngaged", "brake pedal"], ["gasPedalEngaged", "gas pedal"],
+	["emergencyBrakeEngaged", "emergency brake"], ["collisionWarningEngaged", "collision warning"],
+	["accEngaged", "adaptive cruise control"], ["cruiseControlEngaged", "cruise control"],
+	["speedLimiterEngaged", "speed limiter"],
+];
+const EXTERIOR_LIGHTS_BITS = [
+	["lowBeamHeadlightsOn", "low beam"], ["highBeamHeadlightsOn", "high beam"],
+	["leftTurnSignalOn", "left turn signal"], ["rightTurnSignalOn", "right turn signal"],
+	["daytimeRunningLightsOn", "daytime running lights"], ["reverseLightOn", "reverse light"],
+	["fogLightOn", "fog light"], ["parkingLightsOn", "parking lights"],
+];
+const LANE_POSITION_NAMES = { "-1": "off the road", 0: "inner hard shoulder", 1: "innermost driving lane", 2: "2nd lane from inside", 14: "outer hard shoulder" };
+const VEHICLE_ROLES = {
+	0: "default", 1: "public transport", 2: "special transport", 3: "dangerous goods",
+	4: "road work", 5: "rescue", 6: "emergency", 7: "safety car", 8: "agriculture",
+	9: "commercial", 10: "military", 11: "road operator", 12: "taxi",
+};
+
+function activeFlagsLabel(bitObj, bitNames) {
+	const flags = bitStringFlags(bitObj, bitNames.map(([name]) => name));
+	if (!flags) return null;
+	const active = bitNames.filter(([name]) => flags[name]).map(([, label]) => label);
+	return active.length ? active.join(", ") : "none";
+}
+
+// Vehicle-specific CAM extras, plus RSU protected zones -- returns extra
+// [label, value] rows to append to a station popup's table, empty for
+// anything else (RSU CAMs, or a station whose last message wasn't a CAM).
+function camExtraRows(decodedJson) {
+	const decoded = safeParseJson(decodedJson);
+	const params = decoded && decoded.cam && decoded.cam.camParameters;
+	if (!params) return [];
+
+	const rows = [];
+	const hf = params.highFrequencyContainer;
+	if (hf && hf.choice === "basicVehicleContainerHighFrequency") {
+		const v = hf.value || {};
+		const pedals = activeFlagsLabel(v.accelerationControl, ACCELERATION_CONTROL_BITS);
+		if (pedals !== null) rows.push(["Pedals / controls", pedals]);
+		if (v.lanePosition !== undefined && v.lanePosition !== null) {
+			rows.push(["Lane position", LANE_POSITION_NAMES[v.lanePosition] || ("lane " + v.lanePosition)]);
+		}
+		const steer = v.steeringWheelAngle && v.steeringWheelAngle.steeringWheelAngleValue;
+		if (steer !== undefined && steer !== null && steer !== 512) rows.push(["Steering wheel", fmt(steer * 1.5, "°", 1)]);
+	} else if (hf && hf.choice === "rsuContainerHighFrequency") {
+		const zones = (hf.value || {}).protectedCommunicationZonesRSU || [];
+		if (zones.length) rows.push(["Protected zones", zones.length + (zones.length === 1 ? " zone" : " zones")]);
+	}
+
+	const lf = params.lowFrequencyContainer;
+	if (lf && lf.choice === "basicVehicleContainerLowFrequency") {
+		const v = lf.value || {};
+		const lights = activeFlagsLabel(v.exteriorLights, EXTERIOR_LIGHTS_BITS);
+		if (lights !== null) rows.push(["Lights / signals", lights]);
+		if (v.vehicleRole !== undefined && v.vehicleRole !== null) {
+			rows.push(["Vehicle role", VEHICLE_ROLES[v.vehicleRole] || ("role " + v.vehicleRole)]);
+		}
+	}
+	return rows;
+}
+
 function stationPopupHtml(p) {
 	const rows = [
 		["Station ID", p.station_id],
@@ -1278,6 +1542,8 @@ function stationPopupHtml(p) {
 		["Size", (p.vehicle_length_m || p.vehicle_width_m) ? `${fmt(p.vehicle_length_m, "m", 1)} x ${fmt(p.vehicle_width_m, "m", 1)}` : "-"],
 		["Position", `${p.latitude_deg}, ${p.longitude_deg}`],
 		["Trailer", trailerSummary(p.trailer_json)],
+		securityStatusRow(p.gn_json),
+		...camExtraRows(p.decoded_json),
 		["Device", escapeHtml(p.device_id)],
 		["First seen", relTime(p.first_seen)],
 		["Last seen", relTime(p.last_seen)],
@@ -1296,13 +1562,14 @@ function stationPopupHtml(p) {
 function hazardPopupHtml(p) {
 	const rows = [
 		["Cause", escapeHtml(p.causeLabel)],
-		["Sub-cause", p.sub_cause_code !== null ? p.sub_cause_code : "-"],
+		["Sub-cause", escapeHtml(subCauseCodeName(p.cause_code, p.sub_cause_code) || "-")],
 		["Originating station", p.originating_station_id],
 		["Sequence #", p.sequence_number],
 		["MAC", `<span class="mac">${escapeHtml(p.mac || "unknown")}</span>`],
 		["Status", p.termination ? `terminated (${escapeHtml(p.termination)})` : (p.isExpired ? "expired" : `<span class="badge">active</span>`)],
 		["Position", `${p.latitude_deg}, ${p.longitude_deg}`],
 		["Altitude", p.altitude_m !== null ? fmt(p.altitude_m, "m", 1) : "-"],
+		securityStatusRow(p.gn_json),
 		["Device", escapeHtml(p.device_id)],
 		["First received", relTime(p.first_received_at)],
 		["Last received", relTime(p.last_received_at)],
