@@ -2,6 +2,17 @@
 
 const STALE_SECONDS = 300;
 const POLL_MS = 4000;
+// Optional live-push notification from mqtt-bridge/mqtt_to_mysql.py's
+// WebSocket server (see its README's "Live push" section) -- when set,
+// an incoming message triggers an immediate refresh() instead of waiting
+// for the next POLL_MS tick, which stays running regardless as the
+// reliable fallback (a missed/dropped WebSocket message just means the
+// next poll catches it up to POLL_MS later, same as if this were unset).
+// Empty by default: there's no server-side templating in this static
+// HTML setup to inject it automatically, so point it at wherever that
+// service's --ws-host/--ws-port are reachable from your browser, e.g.
+// "ws://192.168.0.10:8765".
+const WS_URL = "";
 const VIEW_COOKIE = "citsMapView";
 const EXPIRED_HOURS_COOKIE = "citsExpiredHours";
 const PANEL_COLLAPSED_COOKIE = "citsPanelCollapsed";
@@ -928,7 +939,45 @@ map.on("load", () => {
 
 	refresh();
 	setInterval(refresh, POLL_MS);
+	connectWebSocket();
 });
+
+// Connects to mqtt-bridge's optional live-push WebSocket (see WS_URL's own
+// comment) and triggers an immediate refresh() on any message, throttled
+// so a burst of several messages within a second only triggers one fetch.
+// Reconnects with a capped exponential backoff on close/error -- silently
+// gives up trying only in the sense that it keeps retrying forever in the
+// background; polling never stops regardless, so a permanently-unreachable
+// WS_URL just means "no faster than POLL_MS", not a broken page.
+let wsReconnectDelayMs = 1000;
+let wsLastTriggeredRefreshAt = 0;
+const WS_REFRESH_THROTTLE_MS = 1000;
+const WS_MAX_RECONNECT_DELAY_MS = 30000;
+
+function connectWebSocket() {
+	if (!WS_URL) return;
+	let socket;
+	try {
+		socket = new WebSocket(WS_URL);
+	} catch (err) {
+		return;
+	}
+	socket.addEventListener("open", () => {
+		wsReconnectDelayMs = 1000;
+	});
+	socket.addEventListener("message", () => {
+		const now = Date.now();
+		if (now - wsLastTriggeredRefreshAt < WS_REFRESH_THROTTLE_MS) return;
+		wsLastTriggeredRefreshAt = now;
+		refresh();
+	});
+	const scheduleReconnect = () => {
+		setTimeout(connectWebSocket, wsReconnectDelayMs);
+		wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 2, WS_MAX_RECONNECT_DELAY_MS);
+	};
+	socket.addEventListener("close", scheduleReconnect);
+	socket.addEventListener("error", () => socket.close());
+}
 
 function emptyFC() {
 	return { type: "FeatureCollection", features: [] };
@@ -1266,6 +1315,51 @@ function hazardToFeature(h) {
 	};
 }
 
+// DENM deduplication: different stations reporting the SAME real-world
+// event (a traffic jam three different cars all drove into, say) each get
+// their own row in denm_events -- there's no way to know from the wire
+// protocol alone that they're the same event, only that they probably
+// are. Greedy proximity clustering: two reports merge if they share a
+// cause+sub-cause and sit within HAZARD_DEDUPE_RADIUS_M of each other
+// (chained -- A near B near C can end up in one cluster even if A and C
+// individually exceed the radius, same tradeoff any greedy clustering
+// makes). The most-recently-updated member represents the cluster on the
+// map; denmQueueTraceFeatures() and per-report data still use the
+// original, ungrouped hazardFeatures list -- only the marker/count is
+// deduplicated, not the underlying reports.
+const HAZARD_DEDUPE_RADIUS_M = 150;
+
+function clusterHazardFeatures(hazardFeatures) {
+	const clusters = [];
+	for (const f of hazardFeatures) {
+		const [lon, lat] = f.geometry.coordinates;
+		const cluster = clusters.find((c) =>
+			c.cause_code === f.properties.cause_code &&
+			c.sub_cause_code === f.properties.sub_cause_code &&
+			haversineMeters([lon, lat], [c.lon, c.lat]) <= HAZARD_DEDUPE_RADIUS_M
+		);
+		if (cluster) {
+			cluster.members.push(f);
+		} else {
+			clusters.push({ members: [f], lon, lat, cause_code: f.properties.cause_code, sub_cause_code: f.properties.sub_cause_code });
+		}
+	}
+	return clusters.map((cluster) => {
+		if (cluster.members.length === 1) return cluster.members[0];
+		const rep = cluster.members.reduce((a, b) =>
+			new Date(b.properties.last_received_at) > new Date(a.properties.last_received_at) ? b : a
+		);
+		return {
+			...rep,
+			properties: {
+				...rep.properties,
+				sourceCount: cluster.members.length,
+				sourceStationIds: cluster.members.map((m) => m.properties.originating_station_id),
+			},
+		};
+	});
+}
+
 // Top statistics badges: vehicles and hazards always show (even at zero, so
 // the panel doesn't jump around), the rest (RSUs, traffic lights,
 // intersections, trailers) only appear once that layer actually has data,
@@ -1318,6 +1412,7 @@ async function refresh() {
 	const cpmByStation = new Map((data.cpm || []).map((c) => [c.station_id, c]));
 	const stationFeatures = data.stations.map((s) => stationToFeature(s, cpmByStation));
 	const hazardFeatures = data.hazards.map(hazardToFeature);
+	const hazardClusters = clusterHazardFeatures(hazardFeatures);
 	const geometryFeatures = (data.intersections || []).flatMap(intersectionToLineFeatures);
 	const trafficLightFeatures = trafficLightsToFeatures(data.traffic_lights || []);
 	const trailerFeatures = trailersToFeatures(data.stations || []);
@@ -1332,7 +1427,7 @@ async function refresh() {
 	const courseFeaturesList = courseFeatures(data.courses || []);
 
 	map.getSource("stations").setData({ type: "FeatureCollection", features: stationFeatures });
-	map.getSource("hazards").setData({ type: "FeatureCollection", features: hazardFeatures });
+	map.getSource("hazards").setData({ type: "FeatureCollection", features: hazardClusters });
 	map.getSource("denm-queue-trace").setData({ type: "FeatureCollection", features: denmQueueTraceFeatures(hazardFeatures) });
 	map.getSource("geometry").setData({ type: "FeatureCollection", features: geometryFeatures });
 	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
@@ -1341,15 +1436,15 @@ async function refresh() {
 	map.getSource("heatmap").setData({ type: "FeatureCollection", features: heatmapFeatures });
 	map.getSource("vehicle-courses").setData({ type: "FeatureCollection", features: courseFeaturesList });
 
-	renderCounts(stationFeatures, hazardFeatures, trafficLightFeatures, data.intersections || [], trailerFeatures);
+	renderCounts(stationFeatures, hazardClusters, trafficLightFeatures, data.intersections || [], trailerFeatures);
 	document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
 	renderDevices(data.devices || []);
 
-	if (!hasFitBounds && (stationFeatures.length > 0 || hazardFeatures.length > 0 || trafficLightFeatures.length > 0)) {
+	if (!hasFitBounds && (stationFeatures.length > 0 || hazardClusters.length > 0 || trafficLightFeatures.length > 0)) {
 		hasFitBounds = true;
 		const bounds = new maplibregl.LngLatBounds();
 		for (const f of stationFeatures) bounds.extend(f.geometry.coordinates);
-		for (const f of hazardFeatures) bounds.extend(f.geometry.coordinates);
+		for (const f of hazardClusters) bounds.extend(f.geometry.coordinates);
 		for (const f of trafficLightFeatures) bounds.extend(f.geometry.coordinates);
 		map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
 	}
@@ -1460,6 +1555,26 @@ function showFloatingPopupAt(x, y, html) {
 		document.addEventListener("mouseup", onUp);
 	});
 	bar.querySelector(".floating-popup-close").addEventListener("click", closeFloatingPopup);
+
+	// Popup content that needs its own network fetch (station message
+	// history, traffic-light stats) loads lazily -- wired up here, once,
+	// right after the popup's HTML is inserted, rather than fetched
+	// automatically every time a popup opens.
+	const historyDetails = floatingPopupEl.querySelector(".station-history");
+	if (historyDetails) {
+		historyDetails.addEventListener("toggle", () => {
+			if (historyDetails.open && !historyDetails.dataset.loaded) {
+				historyDetails.dataset.loaded = "1";
+				loadStationHistory(historyDetails, historyDetails.dataset.stationId);
+			}
+		});
+	}
+	floatingPopupEl.querySelectorAll(".tl-stats-link").forEach((link) => {
+		link.addEventListener("click", (e) => {
+			e.preventDefault();
+			loadTlStats(link);
+		});
+	});
 
 	return floatingPopupEl;
 }
@@ -1746,14 +1861,47 @@ function stationPopupHtml(p) {
 	return `<div class="cits-popup">
 		<h3>${escapeHtml(p.station_type_name)} &middot; ${escapeHtml(p.mac || "station " + p.station_id)}${staleTag}</h3>
 		<table>${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("")}</table>
+		<details class="station-history" data-station-id="${escapeHtml(String(p.station_id))}">
+			<summary>Message history</summary>
+			<div class="station-history-body">loading&hellip;</div>
+		</details>
 		${json ? `<details><summary>Raw decoded message</summary><pre>${escapeHtml(json)}</pre></details>` : ""}
 	</div>`;
+}
+
+// Lazy-loaded (see showFloatingPopupAt's wiring of the ".station-history"
+// <details> toggle event) rather than fetched every time a popup opens --
+// it's every its_messages row for the station, any type, could be a lot.
+async function loadStationHistory(detailsEl, stationId) {
+	const body = detailsEl.querySelector(".station-history-body");
+	let data;
+	try {
+		const res = await fetch("api.php?station_id=" + encodeURIComponent(stationId), { cache: "no-store" });
+		data = await res.json();
+	} catch (err) {
+		body.textContent = "Failed to load history.";
+		return;
+	}
+	const rows = data.station_history || [];
+	if (!rows.length) {
+		body.textContent = "No message history found.";
+		return;
+	}
+	body.innerHTML = rows.map((r) => {
+		const errTag = r.decode_error ? ` <span class="expired-tag" title="${escapeHtml(r.decode_error)}">(decode error)</span>` : "";
+		return `<div>${escapeHtml(relTime(r.received_at))} &middot; ${escapeHtml((r.message_type || "?").toUpperCase())}${errTag}</div>`;
+	}).join("");
 }
 
 function hazardPopupHtml(p) {
 	const rows = [
 		["Cause", escapeHtml(p.causeLabel)],
 		["Sub-cause", escapeHtml(subCauseCodeName(p.cause_code, p.sub_cause_code) || "-")],
+	];
+	if (p.sourceCount > 1) {
+		rows.push(["Sources", `${p.sourceCount} stations reporting nearby (${escapeHtml(p.sourceStationIds.join(", "))}) -- shown as one marker, likely the same event`]);
+	}
+	rows.push(
 		["Originating station", p.originating_station_id],
 		["Sequence #", p.sequence_number],
 		["MAC", `<span class="mac">${escapeHtml(p.mac || "unknown")}</span>`],
@@ -1765,7 +1913,7 @@ function hazardPopupHtml(p) {
 		["First received", relTime(p.first_received_at)],
 		["Last received", relTime(p.last_received_at)],
 		["Expires", p.expires_at ? relTime(p.expires_at).replace("ago", "") + (new Date(p.expires_at) > new Date() ? " left" : " (expired)") : "-"],
-	];
+	);
 	const json = prettyJson(p.decoded_json);
 	const expiredTag = p.isExpired ? ` <span class="expired-tag">(expired)</span>` : "";
 	return `<div class="cits-popup">
@@ -1784,12 +1932,42 @@ function trafficLightPopupHtml(p) {
 		const secBadge = sec ? ` <span class="badge" title="${escapeHtml(sec.title)}">${escapeHtml(sec.label)}</span>` : "";
 		const countdown = countdownLabel(g.likely_end_time ?? g.min_end_time, now);
 		const countdownText = countdown ? ` <span class="expired-tag">(changes in ${escapeHtml(countdown)})</span>` : "";
-		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label) + secBadge + countdownText];
+		const statsKey = `${p.region}/${p.intersection_id}/${g.signal_group}`;
+		const statsLink = ` <a href="#" class="tl-stats-link" data-tl-stats="${escapeHtml(statsKey)}">stats</a>`;
+		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label) + secBadge + countdownText + statsLink];
 	});
 	return `<div class="cits-popup">
 		<h3>&#128678; ${escapeHtml(p.name || "Intersection " + p.intersection_id)}</h3>
 		<table>${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("")}</table>
 	</div>`;
+}
+
+// Fetched on click (the "stats" link per signal group), not automatically --
+// see api.php's tl_stats comment for why it's a heavier query than the
+// normal poll. Durations are pre-summed server-side; this just turns them
+// into percentages of the window.
+async function loadTlStats(link) {
+	const key = link.dataset.tlStats;
+	link.textContent = "loading…";
+	let data;
+	try {
+		const res = await fetch("api.php?tl_stats=" + encodeURIComponent(key), { cache: "no-store" });
+		data = await res.json();
+	} catch (err) {
+		link.textContent = "failed to load";
+		return;
+	}
+	const stats = data.tl_stats;
+	const totals = (stats && stats.totals_seconds) || {};
+	const sum = Object.values(totals).reduce((a, b) => a + b, 0);
+	if (!sum) {
+		link.outerHTML = `<span class="tl-stats-result">no history yet</span>`;
+		return;
+	}
+	const parts = Object.entries(totals)
+		.sort((a, b) => b[1] - a[1])
+		.map(([state, secs]) => `${escapeHtml((state || "unknown").replace(/-/g, " "))}: ${Math.round((secs / sum) * 100)}%`);
+	link.outerHTML = `<span class="tl-stats-result">${parts.join(", ")} (last ${stats.window_hours}h)</span>`;
 }
 
 function showPopup(feature, point) {

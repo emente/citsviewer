@@ -400,3 +400,29 @@ html, body {
 	white-space: pre-wrap;
 	word-break: break-word;
 }
+
+.station-history-body {
+	max-height: 140px;
+	overflow-y: auto;
+	overflow-x: hidden;
+	background: #f7f7f7;
+	padding: 6px;
+	border-radius: 4px;
+	font-size: 11px;
+	margin-top: 4px;
+}
+
+.tl-stats-link {
+	color: #2b6cb0;
+	text-decoration: none;
+	font-size: 11px;
+}
+
+.tl-stats-link:hover {
+	text-decoration: underline;
+}
+
+.tl-stats-result {
+	font-size: 11px;
+	color: #666;
+}

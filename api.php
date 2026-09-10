@@ -124,6 +124,81 @@ if (isset($_GET['station_id'])) {
 	}
 }
 
+// Per-station message history (every decoded message its_messages has for
+// this station, any type -- not just CAM) -- also only queried on demand,
+// alongside $trail above when a station_id is requested (same click-a-
+// vehicle trigger; the frontend fetches both together).
+$stationHistory = [];
+if (isset($_GET['station_id'])) {
+	$stationId = (int)$_GET['station_id'];
+	if ($stmt = $l->prepare("SELECT message_type, received_at, decode_error, protocol_version
+	                          FROM its_messages WHERE station_id = ?
+	                          ORDER BY received_at DESC LIMIT 200")) {
+		$stmt->bind_param('i', $stationId);
+		$stmt->execute();
+		$stationHistory = fetchAll($stmt->get_result());
+		$stmt->close();
+	} else {
+		$schemaMissing = true;
+	}
+}
+
+// Traffic light state-duration stats for one signal group, over the last
+// 24h -- on demand (the "Stats" link in a traffic-light popup), since it's
+// a heavier query than anything in the normal poll. Durations are
+// computed in PHP from the raw ordered history rows (portable across
+// MySQL/MariaDB versions without relying on window function support),
+// including one row from just before the window so the state active at
+// the window's start isn't miscounted as starting mid-window, and treating
+// "now" as the end of whatever state is currently active.
+$tlStats = null;
+if (isset($_GET['tl_stats'])) {
+	$parts = explode('/', $_GET['tl_stats']);
+	if (count($parts) === 3) {
+		$region = (int)$parts[0];
+		$intersectionId = (int)$parts[1];
+		$signalGroup = (int)$parts[2];
+		$windowStartStr = gmdate('Y-m-d H:i:s', time() - 24 * 3600);
+
+		$rows = [];
+		if ($stmt = $l->prepare("SELECT event_state, changed_at FROM traffic_light_state_history
+		                          WHERE region = ? AND intersection_id = ? AND signal_group = ? AND changed_at <= ?
+		                          ORDER BY changed_at DESC LIMIT 1")) {
+			$stmt->bind_param('iiis', $region, $intersectionId, $signalGroup, $windowStartStr);
+			$stmt->execute();
+			$r = $stmt->get_result()->fetch_assoc();
+			$stmt->close();
+			if ($r) {
+				$rows[] = ['event_state' => $r['event_state'], 'changed_at' => $windowStartStr];
+			}
+		} else {
+			$schemaMissing = true;
+		}
+		if ($stmt = $l->prepare("SELECT event_state, changed_at FROM traffic_light_state_history
+		                          WHERE region = ? AND intersection_id = ? AND signal_group = ? AND changed_at > ?
+		                          ORDER BY changed_at ASC")) {
+			$stmt->bind_param('iiis', $region, $intersectionId, $signalGroup, $windowStartStr);
+			$stmt->execute();
+			foreach (fetchAll($stmt->get_result()) as $r) {
+				$rows[] = $r;
+			}
+			$stmt->close();
+		} else {
+			$schemaMissing = true;
+		}
+
+		$totals = [];
+		$nowTs = time();
+		for ($i = 0; $i < count($rows); $i++) {
+			$state = $rows[$i]['event_state'] ?? 'unknown';
+			$start = strtotime($rows[$i]['changed_at']);
+			$end = isset($rows[$i + 1]) ? strtotime($rows[$i + 1]['changed_at']) : $nowTs;
+			$totals[$state] = ($totals[$state] ?? 0) + max(0, $end - $start);
+		}
+		$tlStats = ['window_hours' => 24, 'totals_seconds' => $totals, 'sample_count' => count($rows)];
+	}
+}
+
 // DENM hazard events -- currently-active ones always included, plus
 // already-terminated/expired ones whose last_received_at falls within the
 // expired-items window (none, when $expiredHours is 0).
@@ -317,6 +392,8 @@ $out = [
 	'heatmap' => $heatmap,
 	'courses' => $courses,
 	'trail' => $trail,
+	'station_history' => $stationHistory,
+	'tl_stats' => $tlStats,
 	'intersections' => $intersections,
 	'traffic_lights' => $trafficLights,
 	'cpm' => $cpm,
