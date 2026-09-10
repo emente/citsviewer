@@ -84,6 +84,44 @@ if ($stmt = $l->prepare($sql)) {
 	$schemaMissing = true;
 }
 
+// Recent-course trails: last 5 minutes of CAM positions for every station,
+// so the frontend can draw a short trail behind currently-moving vehicles
+// ("currently moving" -- speed_m_s > 0 from the `stations` query above --
+// is the frontend's own decision; this just supplies the raw recent
+// history to draw from). Fixed at 5 minutes regardless of $staleSeconds/
+// expired-hours, which are a separate concern (what counts as "live" and
+// how far back to show already-expired items).
+$courses = [];
+$res = $l->query("SELECT station_id, longitude_deg, latitude_deg, received_at
+                   FROM cam_messages
+                   WHERE received_at > (UTC_TIMESTAMP() - INTERVAL 5 MINUTE)
+                   ORDER BY station_id, received_at ASC");
+if ($res === false) {
+	$schemaMissing = true;
+} else {
+	$courses = fetchAll($res);
+}
+
+// Full CAM history for one station -- focus mode's "show everything
+// received from this station" trail. Only queried when a station_id is
+// explicitly requested (clicking a vehicle/RSU on the map); capped
+// generously since, unlike $courses above, this can span the station's
+// entire known lifetime rather than a fixed recent window.
+$trail = [];
+if (isset($_GET['station_id'])) {
+	$stationId = (int)$_GET['station_id'];
+	if ($stmt = $l->prepare("SELECT longitude_deg, latitude_deg, received_at
+	                          FROM cam_messages WHERE station_id = ?
+	                          ORDER BY received_at ASC LIMIT 5000")) {
+		$stmt->bind_param('i', $stationId);
+		$stmt->execute();
+		$trail = fetchAll($stmt->get_result());
+		$stmt->close();
+	} else {
+		$schemaMissing = true;
+	}
+}
+
 // DENM hazard events -- currently-active ones always included, plus
 // already-terminated/expired ones whose last_received_at falls within the
 // expired-items window (none, when $expiredHours is 0).
@@ -222,6 +260,8 @@ $out = [
 	'stations' => $stations,
 	'hazards' => $hazards,
 	'heatmap' => $heatmap,
+	'courses' => $courses,
+	'trail' => $trail,
 	'intersections' => $intersections,
 	'traffic_lights' => $trafficLights,
 	'devices' => $devices,

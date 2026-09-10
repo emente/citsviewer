@@ -150,7 +150,7 @@ for (const sectionId of ["stats-section", "devices-section", "legend", "display-
 // ---------------------------------------------------------------------------
 
 const LAYER_TOGGLES = {
-	"layer-vehicles": ["stations-vehicle-icons"],
+	"layer-vehicles": ["stations-vehicle-icons", "vehicle-courses-lines"],
 	"layer-rsu": ["stations-rsu-icons"],
 	"layer-denm": ["hazards-icons"],
 	"layer-traffic-lights": ["traffic-lights-icons"],
@@ -355,7 +355,6 @@ map.on("styleimagemissing", (e) => {
 // If we restored a saved view, respect it instead of auto-fitting to
 // whatever data happens to be live on this load.
 let hasFitBounds = !!savedView;
-let popup = null;
 
 map.on("moveend", () => {
 	const c = map.getCenter();
@@ -487,6 +486,85 @@ function setStationsClustering(enabled) {
 	refresh();
 }
 
+// ---------------------------------------------------------------------------
+// Focus mode -- clicking a vehicle/RSU hides every other layer and shows
+// that station's full received history (its CAM trail) instead, so it's
+// not lost among everything else on the map. "Show all" (the banner
+// button) restores the normal view.
+// ---------------------------------------------------------------------------
+
+const FOCUS_HIDE_LAYERS = [
+	"geometry-lines", "trailers-lines", "traffic-lights-icons", "heatmap-layer",
+	"stations-clusters", "stations-cluster-count", "stations-vehicle-icons",
+	"stations-rsu-icons", "hazards-icons", "vehicle-courses-lines",
+];
+
+let focusedStationId = null;
+
+function enterFocusMode(stationId) {
+	focusedStationId = stationId;
+	for (const layerId of FOCUS_HIDE_LAYERS) {
+		if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "none");
+	}
+	map.setLayoutProperty("focus-trail-line", "visibility", "visible");
+	map.setLayoutProperty("focus-trail-points", "visibility", "visible");
+	document.getElementById("focus-banner-text").textContent = "Showing full history for station " + stationId;
+	document.getElementById("focus-banner").hidden = false;
+	updateFocusTrail(true);
+}
+
+// No snapshot/restore bookkeeping needed: every hidden layer is either
+// checkbox-driven (applyLayerVisibility reads the checkboxes as they
+// currently stand, including any the user toggled while focused) or one of
+// the two cluster layers, which have no checkbox of their own and are
+// always visible outside focus mode.
+function exitFocusMode() {
+	focusedStationId = null;
+	document.getElementById("focus-banner").hidden = true;
+	map.setLayoutProperty("focus-trail-line", "visibility", "none");
+	map.setLayoutProperty("focus-trail-points", "visibility", "none");
+	map.getSource("focus-trail").setData(emptyFC());
+
+	for (const layerId of ["stations-clusters", "stations-cluster-count"]) {
+		if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", "visible");
+	}
+	applyLayerVisibility();
+	const heatmapCheckbox = document.getElementById("option-heatmap");
+	map.setLayoutProperty("heatmap-layer", "visibility", heatmapCheckbox.checked ? "visible" : "none");
+}
+
+// Every CAM received from this station, oldest first -- literally every
+// position packet it has sent, per schema.sql's own description of
+// cam_messages as the append-only trail/playback table. Piggybacks on the
+// same POLL_MS cadence as the main refresh() (see there) rather than its
+// own timer, so the trail keeps growing live while focused.
+async function updateFocusTrail(fitBounds) {
+	if (focusedStationId === null) return;
+	let data;
+	try {
+		const res = await fetch("api.php?station_id=" + focusedStationId, { cache: "no-store" });
+		data = await res.json();
+	} catch (err) {
+		return;
+	}
+	if (focusedStationId === null) return; // exited while the fetch was in flight
+
+	const points = (data.trail || []).map((p) => [parseFloat(p.longitude_deg), parseFloat(p.latitude_deg)]);
+	const features = points.map((coord) => ({ type: "Feature", geometry: { type: "Point", coordinates: coord }, properties: {} }));
+	if (points.length > 1) {
+		features.push({ type: "Feature", geometry: { type: "LineString", coordinates: points }, properties: {} });
+	}
+	map.getSource("focus-trail").setData({ type: "FeatureCollection", features });
+
+	if (fitBounds && points.length > 0) {
+		const bounds = new maplibregl.LngLatBounds();
+		for (const c of points) bounds.extend(c);
+		map.fitBounds(bounds, { padding: 60, maxZoom: 17, duration: 600 });
+	}
+}
+
+document.getElementById("focus-banner-exit").addEventListener("click", exitFocusMode);
+
 map.on("load", () => {
 	registerIcons(map);
 
@@ -496,7 +574,9 @@ map.on("load", () => {
 	map.addSource("geometry", { type: "geojson", data: emptyFC() });
 	map.addSource("traffic-lights", { type: "geojson", data: emptyFC() });
 	map.addSource("trailers", { type: "geojson", data: emptyFC() });
+	map.addSource("vehicle-courses", { type: "geojson", data: emptyFC() });
 	map.addSource("heatmap", { type: "geojson", data: emptyFC() });
+	map.addSource("focus-trail", { type: "geojson", data: emptyFC() });
 
 	map.addLayer({
 		id: "geometry-lines",
@@ -517,6 +597,22 @@ map.on("load", () => {
 			"line-color": "#4299e1",
 			"line-width": 5,
 			"line-opacity": 0.8,
+		},
+	});
+
+	// Recent course trail for currently-moving vehicles (last 5 minutes of
+	// CAM positions -- see courseFeatures()). Tied to the "vehicles" legend
+	// checkbox via LAYER_TOGGLES rather than getting its own, since it's
+	// really just an extra visualization of the same layer.
+	map.addLayer({
+		id: "vehicle-courses-lines",
+		type: "line",
+		source: "vehicle-courses",
+		paint: {
+			"line-color": "#2b6cb0",
+			"line-width": 2,
+			"line-opacity": 0.6,
+			"line-dasharray": [2, 1],
 		},
 	});
 
@@ -555,6 +651,36 @@ map.on("load", () => {
 				1, "red",
 			],
 			"heatmap-opacity": 0.7,
+		},
+	});
+
+	// Focus-mode trail (see enterFocusMode): a clicked vehicle/RSU's full
+	// CAM history, drawn as a line plus a dot per received position. Hidden
+	// until focus mode is entered. Both layers read the same mixed
+	// Point/LineString source, split by geometry type.
+	map.addLayer({
+		id: "focus-trail-line",
+		type: "line",
+		source: "focus-trail",
+		filter: ["==", ["geometry-type"], "LineString"],
+		layout: { visibility: "none" },
+		paint: {
+			"line-color": "#d53f8c",
+			"line-width": 3,
+			"line-opacity": 0.8,
+		},
+	});
+	map.addLayer({
+		id: "focus-trail-points",
+		type: "circle",
+		source: "focus-trail",
+		filter: ["==", ["geometry-type"], "Point"],
+		layout: { visibility: "none" },
+		paint: {
+			"circle-color": "#d53f8c",
+			"circle-radius": 4,
+			"circle-stroke-width": 1,
+			"circle-stroke-color": "#ffffff",
 		},
 	});
 
@@ -615,8 +741,14 @@ map.on("load", () => {
 		map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
 		map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
 	}
-	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons", "hazards-icons", "traffic-lights-icons"]) {
-		map.on("click", layerId, (e) => showPopup(e.features[0]));
+	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons"]) {
+		map.on("click", layerId, (e) => {
+			showPopup(e.features[0], e.point);
+			enterFocusMode(e.features[0].properties.station_id);
+		});
+	}
+	for (const layerId of ["hazards-icons", "traffic-lights-icons"]) {
+		map.on("click", layerId, (e) => showPopup(e.features[0], e.point));
 	}
 
 	applyLayerVisibility();
@@ -795,6 +927,29 @@ function trailersToFeatures(stations) {
 	return features;
 }
 
+// Recent-course trails: one polyline per currently-moving vehicle, from its
+// last 5 minutes of CAM positions (data.courses -- see api.php, unrelated
+// to the on-demand full-history focus-mode trail). Only stations present in
+// `movingStationIds` (computed by the caller from live, non-stale,
+// speed_m_s > 0 stations) get a line -- a station that has just stopped
+// still has recent rows in data.courses, but showing its trail once it's no
+// longer moving would be misleading.
+function courseFeatures(courses, movingStationIds) {
+	const byStation = new Map();
+	for (const row of courses) {
+		if (!movingStationIds.has(row.station_id)) continue;
+		if (!byStation.has(row.station_id)) byStation.set(row.station_id, []);
+		byStation.get(row.station_id).push([parseFloat(row.longitude_deg), parseFloat(row.latitude_deg)]);
+	}
+	const features = [];
+	for (const [stationId, coords] of byStation) {
+		if (coords.length > 1) {
+			features.push({ type: "Feature", geometry: { type: "LineString", coordinates: coords }, properties: { station_id: stationId } });
+		}
+	}
+	return features;
+}
+
 function hazardToFeature(h) {
 	return {
 		type: "Feature",
@@ -885,6 +1040,10 @@ async function refresh() {
 		geometry: { type: "Point", coordinates: p },
 		properties: {},
 	}));
+	const movingStationIds = new Set(
+		stationFeatures.filter((f) => !f.properties.isStale && f.properties.speed_m_s > 0).map((f) => f.properties.station_id)
+	);
+	const courseFeaturesList = courseFeatures(data.courses || [], movingStationIds);
 
 	map.getSource("stations").setData({ type: "FeatureCollection", features: stationFeatures });
 	map.getSource("hazards").setData({ type: "FeatureCollection", features: hazardFeatures });
@@ -892,6 +1051,7 @@ async function refresh() {
 	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
 	map.getSource("trailers").setData({ type: "FeatureCollection", features: trailerFeatures });
 	map.getSource("heatmap").setData({ type: "FeatureCollection", features: heatmapFeatures });
+	map.getSource("vehicle-courses").setData({ type: "FeatureCollection", features: courseFeaturesList });
 
 	renderCounts(stationFeatures, hazardFeatures, trafficLightFeatures, data.intersections || [], trailerFeatures);
 	document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
@@ -905,6 +1065,8 @@ async function refresh() {
 		for (const f of trafficLightFeatures) bounds.extend(f.geometry.coordinates);
 		map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
 	}
+
+	if (focusedStationId !== null) updateFocusTrail(false);
 }
 
 let latestDevices = [];
@@ -976,15 +1138,47 @@ function closeFloatingPopup() {
 	}
 }
 
-function showFloatingPopup(anchorEl, html) {
+// Every info popup (device, station, hazard, traffic light) is this same
+// free-floating, draggable, absolutely-positioned box -- not a MapLibre
+// Popup, which anchors itself to a map LngLat and fights manual dragging.
+// The drag bar doubles as the close control; dragging never moves the
+// underlying feature, it's purely a UI window position.
+function showFloatingPopupAt(x, y, html) {
 	closeFloatingPopup();
-	const rect = anchorEl.getBoundingClientRect();
 	floatingPopupEl = document.createElement("div");
 	floatingPopupEl.className = "floating-popup";
-	floatingPopupEl.innerHTML = html;
-	floatingPopupEl.style.top = (rect.bottom + window.scrollY + 6) + "px";
-	floatingPopupEl.style.left = (rect.left + window.scrollX) + "px";
+	floatingPopupEl.innerHTML = `<div class="floating-popup-bar"><span class="floating-popup-close" title="Close">&times;</span></div>${html}`;
+	floatingPopupEl.style.left = x + "px";
+	floatingPopupEl.style.top = y + "px";
 	document.body.appendChild(floatingPopupEl);
+
+	const bar = floatingPopupEl.querySelector(".floating-popup-bar");
+	bar.addEventListener("mousedown", (e) => {
+		if (e.target.closest(".floating-popup-close")) return;
+		e.preventDefault();
+		const startX = e.clientX;
+		const startY = e.clientY;
+		const startLeft = floatingPopupEl.offsetLeft;
+		const startTop = floatingPopupEl.offsetTop;
+		function onMove(ev) {
+			floatingPopupEl.style.left = (startLeft + ev.clientX - startX) + "px";
+			floatingPopupEl.style.top = (startTop + ev.clientY - startY) + "px";
+		}
+		function onUp() {
+			document.removeEventListener("mousemove", onMove);
+			document.removeEventListener("mouseup", onUp);
+		}
+		document.addEventListener("mousemove", onMove);
+		document.addEventListener("mouseup", onUp);
+	});
+	bar.querySelector(".floating-popup-close").addEventListener("click", closeFloatingPopup);
+
+	return floatingPopupEl;
+}
+
+function showFloatingPopup(anchorEl, html) {
+	const rect = anchorEl.getBoundingClientRect();
+	showFloatingPopupAt(rect.left + window.scrollX, rect.bottom + window.scrollY + 6, html);
 }
 
 document.getElementById("devices").addEventListener("click", (e) => {
@@ -994,8 +1188,13 @@ document.getElementById("devices").addEventListener("click", (e) => {
 	if (device) showFloatingPopup(row, deviceDetailsHtml(device));
 });
 
+// Clicking outside the popup closes it -- except clicks on a device row or
+// on the map itself, both of which open/replace a popup of their own
+// (via showFloatingPopupAt, called from within the same click's handler),
+// so treating them as "outside" here would immediately close what was just
+// opened.
 document.addEventListener("click", (e) => {
-	if (floatingPopupEl && !floatingPopupEl.contains(e.target) && !e.target.closest(".device")) {
+	if (floatingPopupEl && !floatingPopupEl.contains(e.target) && !e.target.closest(".device") && !e.target.closest("#map")) {
 		closeFloatingPopup();
 	}
 });
@@ -1130,15 +1329,12 @@ function trafficLightPopupHtml(p) {
 	</div>`;
 }
 
-function showPopup(feature) {
-	if (popup) popup.remove();
+function showPopup(feature, point) {
 	const p = feature.properties;
 	let html;
 	if (p.kind === "hazard") html = hazardPopupHtml(p);
 	else if (p.kind === "traffic-light") html = trafficLightPopupHtml(p);
 	else html = stationPopupHtml(p);
-	popup = new maplibregl.Popup({ maxWidth: "320px" })
-		.setLngLat(feature.geometry.coordinates)
-		.setHTML(html)
-		.addTo(map);
+	const mapRect = map.getContainer().getBoundingClientRect();
+	showFloatingPopupAt(mapRect.left + window.scrollX + point.x + 14, mapRect.top + window.scrollY + point.y - 10, html);
 }
