@@ -240,7 +240,7 @@ for (const sectionId of ["stats-section", "search-section", "devices-section", "
 // ---------------------------------------------------------------------------
 
 const LAYER_TOGGLES = {
-	"layer-vehicles": ["stations-vehicle-icons", "vehicle-courses-lines"],
+	"layer-vehicles": ["stations-vehicle-icons", "vehicle-courses-lines", "cam-path-history-lines"],
 	"layer-rsu": ["stations-rsu-icons"],
 	"layer-denm": ["hazards-icons", "denm-queue-trace-lines"],
 	"layer-traffic-lights": ["traffic-lights-icons", "traffic-lights-countdown"],
@@ -626,7 +626,7 @@ const FOCUS_HIDE_LAYERS = [
 	"geometry-lines", "trailers-lines", "traffic-lights-icons", "traffic-lights-countdown", "heatmap-layer",
 	"stations-clusters", "stations-cluster-count", "stations-vehicle-icons",
 	"stations-rsu-icons", "hazards-icons", "vehicle-courses-lines", "denm-queue-trace-lines",
-	"receiver-lines-lines",
+	"receiver-lines-lines", "cam-path-history-lines",
 ];
 
 let focusedStationId = null;
@@ -707,6 +707,7 @@ map.on("load", () => {
 	map.addSource("trailers", { type: "geojson", data: emptyFC() });
 	map.addSource("receiver-lines", { type: "geojson", data: emptyFC() });
 	map.addSource("vehicle-courses", { type: "geojson", data: emptyFC() });
+	map.addSource("cam-path-history", { type: "geojson", data: emptyFC() });
 	map.addSource("heatmap", { type: "geojson", data: emptyFC() });
 	map.addSource("focus-trail", { type: "geojson", data: emptyFC() });
 
@@ -758,6 +759,23 @@ map.on("load", () => {
 			"line-width": 2,
 			"line-opacity": 0.6,
 			"line-dasharray": [2, 1],
+		},
+	});
+
+	// The vehicle's own self-reported pathHistory (see camPathHistoryFeatures)
+	// -- distinct from vehicle-courses-lines above, which is derived
+	// server-side from polled CAM positions over the last 5 minutes. This is
+	// whatever trailing breadcrumb the vehicle itself chose to include in
+	// its most recent CAM, which can be shorter or differently-shaped.
+	map.addLayer({
+		id: "cam-path-history-lines",
+		type: "line",
+		source: "cam-path-history",
+		paint: {
+			"line-color": "#805ad5",
+			"line-width": 2,
+			"line-opacity": 0.6,
+			"line-dasharray": [1, 2],
 		},
 	});
 
@@ -1286,6 +1304,50 @@ function denmQueueTraceFeatures(hazardFeatures) {
 	return features;
 }
 
+// CAM's own optional pathHistory (BasicVehicleContainerLowFrequency, cdd_1_3_1_1.asn)
+// -- the vehicle's self-reported trailing breadcrumb, up to 40 points, each
+// chained the same way as DENM's detectionZonesToEventPosition (same
+// DeltaReferencePosition/PathPoint family: "the first PathPoint presents an
+// offset delta position with regards to an external reference position" --
+// here, the CAM's own current referencePosition -- "each other PathPoint...
+// with regards to the previous PathPoint"). Sign/chaining verified against
+// a real captured CAM cross-checked against an independent reference
+// decoder (opentrafficmap.org): first pathHistory point deltaLatitude=1736,
+// deltaLongitude=59 matched exactly on both sides.
+function camPathHistoryFeatures(stationFeatures) {
+	const features = [];
+	for (const f of stationFeatures) {
+		const p = f.properties;
+		const decoded = safeParseJson(p.decoded_json);
+		const params = decoded && decoded.cam && decoded.cam.camParameters;
+		const lf = params && params.lowFrequencyContainer;
+		if (!lf || lf.choice !== "basicVehicleContainerLowFrequency") continue;
+		const path = (lf.value || {}).pathHistory;
+		if (!Array.isArray(path) || !path.length) continue;
+
+		let lat = parseFloat(p.latitude_deg);
+		let lon = parseFloat(p.longitude_deg);
+		const points = [[lon, lat]];
+		for (const pathPoint of path) {
+			const pos = pathPoint.pathPosition || {};
+			const dLat = pos.deltaLatitude;
+			const dLon = pos.deltaLongitude;
+			if (dLat === undefined || dLon === undefined || dLat === DELTA_UNAVAILABLE || dLon === DELTA_UNAVAILABLE) break;
+			lat += dLat / 1e7;
+			lon += dLon / 1e7;
+			points.push([lon, lat]);
+		}
+		if (points.length > 1) {
+			features.push({
+				type: "Feature",
+				geometry: { type: "LineString", coordinates: points },
+				properties: { station_id: p.station_id },
+			});
+		}
+	}
+	return features;
+}
+
 function hazardToFeature(h) {
 	return {
 		type: "Feature",
@@ -1435,6 +1497,7 @@ async function refresh() {
 	map.getSource("receiver-lines").setData({ type: "FeatureCollection", features: receiverLineFeatures(stationFeatures) });
 	map.getSource("heatmap").setData({ type: "FeatureCollection", features: heatmapFeatures });
 	map.getSource("vehicle-courses").setData({ type: "FeatureCollection", features: courseFeaturesList });
+	map.getSource("cam-path-history").setData({ type: "FeatureCollection", features: camPathHistoryFeatures(stationFeatures) });
 
 	renderCounts(stationFeatures, hazardClusters, trafficLightFeatures, data.intersections || [], trailerFeatures);
 	document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
@@ -1793,6 +1856,9 @@ function camExtraRows(decodedJson) {
 		if (lights !== null) rows.push(["Lights / signals", lights]);
 		if (v.vehicleRole !== undefined && v.vehicleRole !== null) {
 			rows.push(["Vehicle role", VEHICLE_ROLES[v.vehicleRole] || ("role " + v.vehicleRole)]);
+		}
+		if (Array.isArray(v.pathHistory) && v.pathHistory.length) {
+			rows.push(["Path history", v.pathHistory.length + (v.pathHistory.length === 1 ? " point" : " points")]);
 		}
 	}
 	return rows;
