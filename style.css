@@ -148,6 +148,11 @@ html, body {
 #devices-body {
 	max-height: 100px;
 	overflow-y: auto;
+	/* overflow-y: auto alone makes some browsers compute overflow-x as
+	   "auto" too (the CSS overflow spec's visible/non-visible pairing
+	   rule), showing a horizontal scrollbar even though content never
+	   overflows sideways -- pin it to hidden explicitly. */
+	overflow-x: hidden;
 }
 
 #devices {
