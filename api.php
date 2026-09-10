@@ -115,6 +115,25 @@ if ($stmt = $l->prepare($sql)) {
 	$schemaMissing = true;
 }
 
+// CAM heatmap points, last 24h -- only queried when explicitly requested
+// (the "CAM heatmap" checkbox is unchecked by default) since cam_messages
+// is an append-only history, not the small latest-position `stations`
+// table, and can be large. Capped with a LIMIT for the same reason; plain
+// [lon, lat] pairs rather than objects to keep the payload small.
+$heatmap = [];
+if (isset($_GET['heatmap'])) {
+	$res = $l->query("SELECT longitude_deg, latitude_deg FROM cam_messages
+	                   WHERE received_at > (UTC_TIMESTAMP() - INTERVAL 24 HOUR)
+	                   ORDER BY id DESC LIMIT 20000");
+	if ($res === false) {
+		$schemaMissing = true;
+	} else {
+		while ($row = $res->fetch_row()) {
+			$heatmap[] = [(float)$row[0], (float)$row[1]];
+		}
+	}
+}
+
 // Intersection / lane geometry from MAPEM (the "geometry" layer). These
 // barely ever change once an RSU has broadcast them, so unlike
 // stations/hazards this isn't gated by $staleSeconds/$windowSeconds -- every
@@ -202,6 +221,7 @@ $out = [
 	'expired_hours' => $expiredHours,
 	'stations' => $stations,
 	'hazards' => $hazards,
+	'heatmap' => $heatmap,
 	'intersections' => $intersections,
 	'traffic_lights' => $trafficLights,
 	'devices' => $devices,

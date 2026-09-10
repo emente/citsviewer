@@ -7,11 +7,14 @@ const EXPIRED_HOURS_COOKIE = "citsExpiredHours";
 const PANEL_COLLAPSED_COOKIE = "citsPanelCollapsed";
 const LAYER_VISIBILITY_COOKIE = "citsLayerVisibility";
 const SECTION_COLLAPSED_COOKIE = "citsSectionCollapsed";
+const CLUSTERING_COOKIE = "citsClusteringEnabled";
 const MAX_EXPIRED_HOURS = 48;
 
 function apiUrl() {
 	const expiredHours = parseInt(document.getElementById("expired-hours-slider").value, 10) || 0;
-	return "api.php?stale=" + STALE_SECONDS + (expiredHours > 0 ? "&expired_hours=" + expiredHours : "");
+	const heatmapOn = document.getElementById("option-heatmap").checked;
+	return "api.php?stale=" + STALE_SECONDS + (expiredHours > 0 ? "&expired_hours=" + expiredHours : "") +
+		(heatmapOn ? "&heatmap=1" : "");
 }
 
 // ETSI CDD StationType (subset actually seen in the wild; unmapped codes
@@ -125,7 +128,7 @@ panelToggle.addEventListener("click", () => {
 // same pattern as the whole-panel toggle above, with all three remembered
 // together in one cookie keyed by section id.
 const savedSectionCollapsed = readCookie(SECTION_COLLAPSED_COOKIE) || {};
-for (const sectionId of ["stats-section", "devices-section", "legend"]) {
+for (const sectionId of ["stats-section", "devices-section", "legend", "display-section"]) {
 	const sectionEl = document.getElementById(sectionId);
 	const toggleEl = sectionEl.querySelector(".section-title");
 	if (savedSectionCollapsed[sectionId]) {
@@ -382,23 +385,117 @@ expiredHoursSlider.addEventListener("change", () => {
 	refresh();
 });
 
+// text-font must name a font stack the style's glyphs endpoint actually
+// serves (OpenFreeMap's "liberty" style only bundles Noto Sans) --
+// otherwise the glyph fetch 404s and MapLibre drops the whole symbol (icon
+// included), not just the label.
+// Stale/expired items (only present when "show expired" is checked) render
+// at reduced opacity so live items stay visually dominant.
+const STATION_ICON_LAYOUT = {
+	"icon-image": ["get", "icon"],
+	"icon-size": 0.7,
+	"icon-rotate": ["get", "heading"],
+	"icon-rotation-alignment": "map",
+	"icon-allow-overlap": true,
+	"text-field": ["get", "macShort"],
+	"text-font": ["Noto Sans Regular"],
+	"text-size": 11,
+	"text-offset": [0, 1.2],
+	"text-anchor": "top",
+	"text-allow-overlap": true,
+	"text-optional": true,
+};
+const STATION_ICON_PAINT = {
+	"icon-opacity": ["case", ["get", "isStale"], 0.4, 1],
+	"text-color": "#1a202c",
+	"text-halo-color": "#ffffff",
+	"text-halo-width": 1.4,
+	"text-opacity": ["case", ["get", "isStale"], 0.4, 1],
+};
+const STATIONS_CLUSTER_RADIUS = 50;
+const STATIONS_CLUSTER_MAX_ZOOM = 15;
+
+// (Re)creates the "stations" source and its four dependent layers. Pulled
+// out into its own function because MapLibre's GeoJSON `cluster` option is
+// fixed at source creation -- toggling clustering on/off (the "cluster
+// vehicles" checkbox) means removing and re-adding the source, not just
+// flipping a paint/layout property like the other layer checkboxes.
+function addStationsSourceAndLayers(cluster) {
+	map.addSource("stations", cluster
+		? { type: "geojson", data: emptyFC(), cluster: true, clusterMaxZoom: STATIONS_CLUSTER_MAX_ZOOM, clusterRadius: STATIONS_CLUSTER_RADIUS }
+		: { type: "geojson", data: emptyFC() });
+
+	map.addLayer({
+		id: "stations-clusters",
+		type: "circle",
+		source: "stations",
+		filter: ["has", "point_count"],
+		paint: {
+			"circle-color": ["step", ["get", "point_count"], "#4299e1", 10, "#2b6cb0", 50, "#1a365d"],
+			"circle-radius": ["step", ["get", "point_count"], 16, 10, 22, 50, 28],
+			"circle-stroke-width": 2,
+			"circle-stroke-color": "#ffffff",
+		},
+	});
+
+	map.addLayer({
+		id: "stations-cluster-count",
+		type: "symbol",
+		source: "stations",
+		filter: ["has", "point_count"],
+		layout: {
+			"text-field": ["get", "point_count_abbreviated"],
+			"text-font": ["Noto Sans Bold"],
+			"text-size": 13,
+		},
+		paint: {
+			"text-color": "#ffffff",
+		},
+	});
+
+	// Split into two layers on the same source -- one per "vehicles"/"rsu"
+	// legend checkbox. Clusters themselves stay mixed (a cluster can
+	// contain both types); an acceptable simplification since RSUs are
+	// rare next to vehicles.
+	map.addLayer({
+		id: "stations-vehicle-icons",
+		type: "symbol",
+		source: "stations",
+		filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "station_type"], 15]],
+		layout: STATION_ICON_LAYOUT,
+		paint: STATION_ICON_PAINT,
+	});
+
+	map.addLayer({
+		id: "stations-rsu-icons",
+		type: "symbol",
+		source: "stations",
+		filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "station_type"], 15]],
+		layout: STATION_ICON_LAYOUT,
+		paint: STATION_ICON_PAINT,
+	});
+}
+
+function setStationsClustering(enabled) {
+	for (const layerId of ["stations-clusters", "stations-cluster-count", "stations-vehicle-icons", "stations-rsu-icons"]) {
+		if (map.getLayer(layerId)) map.removeLayer(layerId);
+	}
+	if (map.getSource("stations")) map.removeSource("stations");
+	addStationsSourceAndLayers(enabled);
+	applyLayerVisibility();
+	refresh();
+}
+
 map.on("load", () => {
 	registerIcons(map);
 
-	// Stations cluster as you zoom out (there can be a lot of vehicles);
-	// hazards never cluster -- they're safety-critical and typically few,
+	// Hazards never cluster -- they're safety-critical and typically few,
 	// so each one should always show individually.
-	map.addSource("stations", {
-		type: "geojson",
-		data: emptyFC(),
-		cluster: true,
-		clusterMaxZoom: 15,
-		clusterRadius: 50,
-	});
 	map.addSource("hazards", { type: "geojson", data: emptyFC() });
 	map.addSource("geometry", { type: "geojson", data: emptyFC() });
 	map.addSource("traffic-lights", { type: "geojson", data: emptyFC() });
 	map.addSource("trailers", { type: "geojson", data: emptyFC() });
+	map.addSource("heatmap", { type: "geojson", data: emptyFC() });
 
 	map.addLayer({
 		id: "geometry-lines",
@@ -434,82 +531,49 @@ map.on("load", () => {
 		},
 	});
 
+	// Off by default (the "CAM heatmap (24h)" checkbox starts unchecked --
+	// it's an opt-in extra historical query, not something to silently pull
+	// on every page load) and drawn below the live station icons/clusters,
+	// added right after it here.
 	map.addLayer({
-		id: "stations-clusters",
-		type: "circle",
-		source: "stations",
-		filter: ["has", "point_count"],
+		id: "heatmap-layer",
+		type: "heatmap",
+		source: "heatmap",
+		layout: { visibility: "none" },
 		paint: {
-			"circle-color": ["step", ["get", "point_count"], "#4299e1", 10, "#2b6cb0", 50, "#1a365d"],
-			"circle-radius": ["step", ["get", "point_count"], 16, 10, 22, 50, 28],
-			"circle-stroke-width": 2,
-			"circle-stroke-color": "#ffffff",
+			"heatmap-weight": 1,
+			"heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 0, 1, 15, 3],
+			"heatmap-radius": ["interpolate", ["linear"], ["zoom"], 0, 2, 15, 20],
+			"heatmap-color": [
+				"interpolate", ["linear"], ["heatmap-density"],
+				0, "rgba(33,102,172,0)",
+				0.2, "royalblue",
+				0.4, "cyan",
+				0.6, "lime",
+				0.8, "yellow",
+				1, "red",
+			],
+			"heatmap-opacity": 0.7,
 		},
 	});
 
-	map.addLayer({
-		id: "stations-cluster-count",
-		type: "symbol",
-		source: "stations",
-		filter: ["has", "point_count"],
-		layout: {
-			"text-field": ["get", "point_count_abbreviated"],
-			"text-font": ["Noto Sans Bold"],
-			"text-size": 13,
-		},
-		paint: {
-			"text-color": "#ffffff",
-		},
+	// Clustering preference persists across reloads (it's a cheap rendering
+	// mode, not an extra query) -- the heatmap checkbox deliberately doesn't,
+	// see above.
+	const clusteringEnabled = readCookie(CLUSTERING_COOKIE);
+	const initialClustering = clusteringEnabled === null ? true : clusteringEnabled;
+	document.getElementById("option-clustering").checked = initialClustering;
+	addStationsSourceAndLayers(initialClustering);
+
+	document.getElementById("option-clustering").addEventListener("change", (e) => {
+		writeCookie(CLUSTERING_COOKIE, e.target.checked);
+		setStationsClustering(e.target.checked);
 	});
 
-	// text-font must name a font stack the style's glyphs endpoint actually
-	// serves (OpenFreeMap's "liberty" style only bundles Noto Sans) --
-	// otherwise the glyph fetch 404s and MapLibre drops the whole symbol
-	// (icon included), not just the label.
-	// Stale/expired items (only present when "show expired" is checked)
-	// render at reduced opacity so live items stay visually dominant.
-	const stationIconLayout = {
-		"icon-image": ["get", "icon"],
-		"icon-size": 0.7,
-		"icon-rotate": ["get", "heading"],
-		"icon-rotation-alignment": "map",
-		"icon-allow-overlap": true,
-		"text-field": ["get", "macShort"],
-		"text-font": ["Noto Sans Regular"],
-		"text-size": 11,
-		"text-offset": [0, 1.2],
-		"text-anchor": "top",
-		"text-allow-overlap": true,
-		"text-optional": true,
-	};
-	const stationIconPaint = {
-		"icon-opacity": ["case", ["get", "isStale"], 0.4, 1],
-		"text-color": "#1a202c",
-		"text-halo-color": "#ffffff",
-		"text-halo-width": 1.4,
-		"text-opacity": ["case", ["get", "isStale"], 0.4, 1],
-	};
-
-	// Split into two layers on the same clustered source -- one per
-	// "vehicles"/"rsu" legend checkbox. Clusters themselves stay mixed (a
-	// cluster can contain both types); an acceptable simplification since
-	// RSUs are rare next to vehicles.
-	map.addLayer({
-		id: "stations-vehicle-icons",
-		type: "symbol",
-		source: "stations",
-		filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "station_type"], 15]],
-		layout: stationIconLayout,
-		paint: stationIconPaint,
-	});
-
-	map.addLayer({
-		id: "stations-rsu-icons",
-		type: "symbol",
-		source: "stations",
-		filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "station_type"], 15]],
-		layout: stationIconLayout,
-		paint: stationIconPaint,
+	const heatmapCheckbox = document.getElementById("option-heatmap");
+	heatmapCheckbox.addEventListener("change", () => {
+		map.setLayoutProperty("heatmap-layer", "visibility", heatmapCheckbox.checked ? "visible" : "none");
+		if (heatmapCheckbox.checked) refresh();
 	});
 
 	map.addLayer({
@@ -812,12 +876,21 @@ async function refresh() {
 	const geometryFeatures = (data.intersections || []).flatMap(intersectionToLineFeatures);
 	const trafficLightFeatures = trafficLightsToFeatures(data.traffic_lights || []);
 	const trailerFeatures = trailersToFeatures(data.stations || []);
+	// data.heatmap is only present when the "CAM heatmap (24h)" checkbox is
+	// checked (apiUrl() only requests it then) -- [lon, lat] pairs straight
+	// from cam_messages, no per-point properties needed for a density layer.
+	const heatmapFeatures = (data.heatmap || []).map((p) => ({
+		type: "Feature",
+		geometry: { type: "Point", coordinates: p },
+		properties: {},
+	}));
 
 	map.getSource("stations").setData({ type: "FeatureCollection", features: stationFeatures });
 	map.getSource("hazards").setData({ type: "FeatureCollection", features: hazardFeatures });
 	map.getSource("geometry").setData({ type: "FeatureCollection", features: geometryFeatures });
 	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
 	map.getSource("trailers").setData({ type: "FeatureCollection", features: trailerFeatures });
+	map.getSource("heatmap").setData({ type: "FeatureCollection", features: heatmapFeatures });
 
 	renderCounts(stationFeatures, hazardFeatures, trafficLightFeatures, data.intersections || [], trailerFeatures);
 	document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
