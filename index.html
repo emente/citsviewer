@@ -13,24 +13,33 @@
 <div id="panel">
 	<h1 id="panel-toggle">C-ITS Live Map <span id="panel-caret">&#9662;</span></h1>
 	<div id="panel-body">
-		<div id="counts">
-			<span id="count-stations" class="count">0 stations</span>
-			<span id="count-hazards" class="count hazard">0 hazards</span>
+		<div id="stats-section" class="section">
+			<div class="section-title" id="stats-toggle">Statistics <span class="section-caret">&#9662;</span></div>
+			<div id="stats-body" class="section-body">
+				<div id="counts"></div>
+				<div id="updated">never updated</div>
+			</div>
 		</div>
-		<div id="updated">never updated</div>
-		<div id="expired-toggle">
-			<label for="expired-hours-slider">show expired up to <span id="expired-hours-label">0h</span> old</label>
-			<input type="range" id="expired-hours-slider" min="0" max="48" step="1" value="0">
+		<div id="devices-section" class="section">
+			<div class="section-title" id="devices-toggle">Sensors <span class="section-caret">&#9662;</span></div>
+			<div id="devices-body" class="section-body">
+				<div id="devices"></div>
+			</div>
 		</div>
-		<div id="devices"></div>
-		<div id="legend">
-			<div class="legend-title">Layers</div>
-			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-vehicles" checked><span class="legend-swatch swatch-car"></span>vehicles (CAM)</label>
-			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-rsu" checked><span class="legend-swatch swatch-rsu"></span>roadside units</label>
-			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-denm" checked><span class="legend-swatch swatch-hazard"></span>active hazards (DENM)</label>
-			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-traffic-lights" checked><span class="legend-swatch swatch-traffic-light"></span>traffic lights (SPATEM)</label>
-			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-geometry" checked><span class="legend-swatch swatch-geometry"></span>lane geometry (MAPEM)</label>
-			<label class="legend-row layer-toggle"><input type="checkbox" id="layer-trailer" checked><span class="legend-swatch swatch-trailer"></span>trailers (CPM)</label>
+		<div id="legend" class="section">
+			<div class="section-title" id="legend-toggle">Layers <span class="section-caret">&#9662;</span></div>
+			<div id="legend-body" class="section-body">
+				<div id="expired-toggle">
+					<label for="expired-hours-slider">show expired up to <span id="expired-hours-label">0h</span> old</label>
+					<input type="range" id="expired-hours-slider" min="0" max="48" step="1" value="0">
+				</div>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-vehicles" checked><span class="legend-swatch swatch-car"></span>vehicles (CAM)</label>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-rsu" checked><span class="legend-swatch swatch-rsu"></span>roadside units</label>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-denm" checked><span class="legend-swatch swatch-hazard"></span>active hazards (DENM)</label>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-traffic-lights" checked><span class="legend-swatch swatch-traffic-light"></span>traffic lights (SPATEM)</label>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-geometry" checked><span class="legend-swatch swatch-geometry"></span>lane geometry (MAPEM)</label>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-trailer" checked><span class="legend-swatch swatch-trailer"></span>trailers (CPM)</label>
+			</div>
 		</div>
 	</div>
 </div>

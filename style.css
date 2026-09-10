@@ -55,6 +55,49 @@ html, body {
 	transform: rotate(-90deg);
 }
 
+/* Statistics / Sensors / Layers -- each an independently collapsible
+   section with the same header/caret/body pattern as the top panel. */
+.section {
+	border-top: 1px solid rgba(255, 255, 255, 0.15);
+	padding-top: 8px;
+	margin-bottom: 8px;
+}
+
+.section:last-child {
+	margin-bottom: 0;
+}
+
+.section-title {
+	font-weight: 600;
+	margin-bottom: 6px;
+	font-size: 12px;
+	color: #b8bcc2;
+	cursor: pointer;
+	user-select: none;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.section-caret {
+	font-size: 10px;
+	color: #9aa0a6;
+	transition: transform 0.15s ease;
+}
+
+.section.collapsed .section-title {
+	margin-bottom: 0;
+}
+
+.section.collapsed .section-caret {
+	transform: rotate(-90deg);
+}
+
+.section.collapsed .section-body {
+	display: none;
+}
+
 #counts {
 	display: flex;
 	gap: 8px;
@@ -70,14 +113,15 @@ html, body {
 	font-size: 12px;
 }
 
-.count.hazard {
-	background: #c53030;
-}
+.count.hazard { background: #c53030; }
+.count.rsu { background: #805ad5; }
+.count.traffic-light { background: #48bb78; }
+.count.geometry { background: #ed8936; }
+.count.trailer { background: #4299e1; }
 
 #updated {
 	color: #9aa0a6;
 	font-size: 11px;
-	margin-bottom: 8px;
 }
 
 #expired-toggle {
@@ -101,12 +145,14 @@ html, body {
 	font-weight: normal;
 }
 
+#devices-body {
+	max-height: 100px;
+	overflow-y: auto;
+}
+
 #devices {
 	font-size: 11px;
 	color: #b8bcc2;
-	margin-bottom: 8px;
-	border-top: 1px solid rgba(255, 255, 255, 0.15);
-	padding-top: 8px;
 }
 
 #devices .device {
@@ -153,18 +199,6 @@ html, body {
 
 #devices .dot.online { background: #48bb78; }
 #devices .dot.offline { background: #718096; }
-
-#legend {
-	border-top: 1px solid rgba(255, 255, 255, 0.15);
-	padding-top: 8px;
-}
-
-.legend-title {
-	font-weight: 600;
-	margin-bottom: 4px;
-	font-size: 12px;
-	color: #b8bcc2;
-}
 
 .legend-row {
 	display: flex;

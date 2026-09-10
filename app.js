@@ -6,6 +6,7 @@ const VIEW_COOKIE = "citsMapView";
 const EXPIRED_HOURS_COOKIE = "citsExpiredHours";
 const PANEL_COLLAPSED_COOKIE = "citsPanelCollapsed";
 const LAYER_VISIBILITY_COOKIE = "citsLayerVisibility";
+const SECTION_COLLAPSED_COOKIE = "citsSectionCollapsed";
 const MAX_EXPIRED_HOURS = 48;
 
 function apiUrl() {
@@ -119,6 +120,24 @@ panelToggle.addEventListener("click", () => {
 	panelEl.classList.toggle("collapsed");
 	writeCookie(PANEL_COLLAPSED_COOKIE, panelEl.classList.contains("collapsed"));
 });
+
+// Collapse/expand the Statistics/Sensors/Layers sections independently,
+// same pattern as the whole-panel toggle above, with all three remembered
+// together in one cookie keyed by section id.
+const savedSectionCollapsed = readCookie(SECTION_COLLAPSED_COOKIE) || {};
+for (const sectionId of ["stats-section", "devices-section", "legend"]) {
+	const sectionEl = document.getElementById(sectionId);
+	const toggleEl = sectionEl.querySelector(".section-title");
+	if (savedSectionCollapsed[sectionId]) {
+		sectionEl.classList.add("collapsed");
+	}
+	toggleEl.addEventListener("click", () => {
+		sectionEl.classList.toggle("collapsed");
+		const state = readCookie(SECTION_COLLAPSED_COOKIE) || {};
+		state[sectionId] = sectionEl.classList.contains("collapsed");
+		writeCookie(SECTION_COLLAPSED_COOKIE, state);
+	});
+}
 
 // ---------------------------------------------------------------------------
 // Layer visibility toggles (the vehicles/rsu/denm/traffic-lights/geometry/
@@ -739,6 +758,41 @@ function hazardToFeature(h) {
 	};
 }
 
+// Top statistics badges: vehicles and hazards always show (even at zero, so
+// the panel doesn't jump around), the rest (RSUs, traffic lights,
+// intersections, trailers) only appear once that layer actually has data,
+// so an installation with no MAPEM/CPM traffic yet doesn't show empty badges.
+function countBadge(cls, live, total, singular, plural) {
+	const label = live + " " + (live === 1 ? singular : plural);
+	const text = total > live ? `${label} (+${total - live} expired)` : label;
+	return { cls, text };
+}
+
+function renderCounts(stationFeatures, hazardFeatures, trafficLightFeatures, intersections, trailerFeatures) {
+	const vehicleFeatures = stationFeatures.filter((f) => f.properties.station_type !== 15);
+	const rsuFeatures = stationFeatures.filter((f) => f.properties.station_type === 15);
+	const liveVehicles = vehicleFeatures.filter((f) => !f.properties.isStale).length;
+	const liveRsu = rsuFeatures.filter((f) => !f.properties.isStale).length;
+	const liveHazards = hazardFeatures.filter((f) => !f.properties.isExpired).length;
+
+	const badges = [
+		countBadge("count", liveVehicles, vehicleFeatures.length, "vehicle", "vehicles"),
+		countBadge("count hazard", liveHazards, hazardFeatures.length, "hazard", "hazards"),
+	];
+	if (rsuFeatures.length > 0) badges.push(countBadge("count rsu", liveRsu, rsuFeatures.length, "RSU", "RSUs"));
+	if (trafficLightFeatures.length > 0) {
+		badges.push({ cls: "count traffic-light", text: trafficLightFeatures.length + (trafficLightFeatures.length === 1 ? " traffic light" : " traffic lights") });
+	}
+	if (intersections.length > 0) {
+		badges.push({ cls: "count geometry", text: intersections.length + (intersections.length === 1 ? " intersection" : " intersections") });
+	}
+	if (trailerFeatures.length > 0) {
+		badges.push({ cls: "count trailer", text: trailerFeatures.length + (trailerFeatures.length === 1 ? " trailer" : " trailers") });
+	}
+
+	document.getElementById("counts").innerHTML = badges.map((b) => `<span class="${b.cls}">${escapeHtml(b.text)}</span>`).join("");
+}
+
 async function refresh() {
 	let data;
 	try {
@@ -765,12 +819,7 @@ async function refresh() {
 	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
 	map.getSource("trailers").setData({ type: "FeatureCollection", features: trailerFeatures });
 
-	const liveStations = stationFeatures.filter((f) => !f.properties.isStale).length;
-	const liveHazards = hazardFeatures.filter((f) => !f.properties.isExpired).length;
-	document.getElementById("count-stations").textContent = liveStations + " station" + (liveStations === 1 ? "" : "s") +
-		(stationFeatures.length > liveStations ? ` (+${stationFeatures.length - liveStations} expired)` : "");
-	document.getElementById("count-hazards").textContent = liveHazards + " hazard" + (liveHazards === 1 ? "" : "s") +
-		(hazardFeatures.length > liveHazards ? ` (+${hazardFeatures.length - liveHazards} expired)` : "");
+	renderCounts(stationFeatures, hazardFeatures, trafficLightFeatures, data.intersections || [], trailerFeatures);
 	document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString();
 	renderDevices(data.devices || []);
 
