@@ -1,6 +1,6 @@
 "use strict";
 
-const STALE_SECONDS = 120;
+const STALE_SECONDS = 300;
 const POLL_MS = 4000;
 const VIEW_COOKIE = "citsMapView";
 const EXPIRED_HOURS_COOKIE = "citsExpiredHours";
@@ -366,7 +366,8 @@ const expiredHoursSlider = document.getElementById("expired-hours-slider");
 const expiredHoursLabel = document.getElementById("expired-hours-label");
 
 function setExpiredHoursLabel() {
-	expiredHoursLabel.textContent = expiredHoursSlider.value + "h";
+	const hours = parseInt(expiredHoursSlider.value, 10);
+	expiredHoursLabel.textContent = hours === 0 ? "Realtime only" : `show expired up to ${hours}h old`;
 }
 
 const savedExpiredHours = readCookie(EXPIRED_HOURS_COOKIE);

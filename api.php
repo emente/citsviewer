@@ -28,7 +28,7 @@ if (!$l) {
 // expired (tagged is_stale/is_expired in the response rather than dropped --
 // both tables only ever hold one row per station/hazard, so returning
 // everything within the window is cheap).
-$staleSeconds = isset($_GET['stale']) ? max(5, (int)$_GET['stale']) : 120;
+$staleSeconds = isset($_GET['stale']) ? max(5, (int)$_GET['stale']) : 300;
 // How far back to include already-expired/inactive stations and hazards,
 // picked via a slider in the UI. 0 = none (only live items, same as the
 // old "show expired" checkbox unchecked); capped at 7 days.
