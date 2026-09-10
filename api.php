@@ -386,6 +386,7 @@ if ($res === false) {
 
 $out = [
 	'generated_at' => gmdate('Y-m-d\TH:i:s\Z'),
+	'ws_url' => $WS_URL,
 	'stale_seconds' => $staleSeconds,
 	'expired_hours' => $expiredHours,
 	'stations' => $stations,

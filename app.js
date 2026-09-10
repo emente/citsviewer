@@ -3,16 +3,16 @@
 const STALE_SECONDS = 300;
 const POLL_MS = 4000;
 // Optional live-push notification from mqtt-bridge/mqtt_to_mysql.py's
-// WebSocket server (see its README's "Live push" section) -- when set,
-// an incoming message triggers an immediate refresh() instead of waiting
-// for the next POLL_MS tick, which stays running regardless as the
-// reliable fallback (a missed/dropped WebSocket message just means the
-// next poll catches it up to POLL_MS later, same as if this were unset).
-// Empty by default: there's no server-side templating in this static
-// HTML setup to inject it automatically, so point it at wherever that
-// service's --ws-host/--ws-port are reachable from your browser, e.g.
-// "ws://192.168.0.10:8765".
-const WS_URL = "";
+// WebSocket server (see its README's "Live push" section) -- when
+// configured, an incoming message triggers an immediate refresh() instead
+// of waiting for the next POLL_MS tick, which stays running regardless as
+// the reliable fallback (a missed/dropped WebSocket message just means
+// the next poll catches it up to POLL_MS later, same as if this were
+// unset). The URL itself comes from api.php's own response (`ws_url`,
+// read once on the first refresh() below) -- set WS_URL in citsviewer's
+// own .env (see .env.example), not here; there's nothing to edit in this
+// file for it.
+let wsUrl = null;
 const VIEW_COOKIE = "citsMapView";
 const EXPIRED_HOURS_COOKIE = "citsExpiredHours";
 const PANEL_COLLAPSED_COOKIE = "citsPanelCollapsed";
@@ -957,7 +957,6 @@ map.on("load", () => {
 
 	refresh();
 	setInterval(refresh, POLL_MS);
-	connectWebSocket();
 });
 
 // Connects to mqtt-bridge's optional live-push WebSocket (see WS_URL's own
@@ -973,10 +972,10 @@ const WS_REFRESH_THROTTLE_MS = 1000;
 const WS_MAX_RECONNECT_DELAY_MS = 30000;
 
 function connectWebSocket() {
-	if (!WS_URL) return;
+	if (!wsUrl) return;
 	let socket;
 	try {
-		socket = new WebSocket(WS_URL);
+		socket = new WebSocket(wsUrl);
 	} catch (err) {
 		return;
 	}
@@ -1469,6 +1468,11 @@ async function refresh() {
 	if (data.error) {
 		document.getElementById("updated").textContent = "error: " + data.error;
 		return;
+	}
+
+	if (wsUrl === null && data.ws_url) {
+		wsUrl = data.ws_url;
+		connectWebSocket();
 	}
 
 	const cpmByStation = new Map((data.cpm || []).map((c) => [c.station_id, c]));
