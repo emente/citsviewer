@@ -844,7 +844,7 @@ function toBool(v) {
 	return v === true || v === 1 || v === "1";
 }
 
-function stationToFeature(s) {
+function stationToFeature(s, cpmByStation) {
 	const info = stationTypeInfo(s.station_type);
 	return {
 		type: "Feature",
@@ -874,6 +874,7 @@ function stationToFeature(s) {
 			messageCount: s.message_count !== null && s.message_count !== undefined ? parseInt(s.message_count, 10) : null,
 			messagesLast5Min: s.messages_last_5min !== null && s.messages_last_5min !== undefined ? parseInt(s.messages_last_5min, 10) : null,
 			trailer_json: s.trailer_json || null,
+			cpm: (cpmByStation && cpmByStation.get(s.station_id)) || null,
 		},
 	};
 }
@@ -1040,21 +1041,28 @@ function courseFeatures(courses) {
 	return features;
 }
 
-// DENM's `location.detectionZonesToEventPosition` (a "Traces" -- a list of
-// path chains) traces the physical extent of the hazard/queue behind the
-// event position: each PathPoint is a {deltaLatitude, deltaLongitude}
-// offset in the same 1e-7-degree units as absolute lat/lon (DeltaLatitude/
-// DeltaLongitude in cdd_2_2_1.asn), chained the same way CAM's own
-// pathHistory and MAPEM's NodeXY lane geometry are -- each point offset
-// from the previous one, the first offset from the event position itself.
-// Only the first trace (traces[0]) is drawn; a DENM can carry up to 7 but
-// one is enough to show the queue's shape and extent. NOTE: unlike the
-// MAPEM node-offset direction (verified against real captured traffic
-// earlier in this project), this chaining/sign convention for DENM path
-// history is inferred from the well-documented general ITS pattern, not
-// verified against a known-correct rendering -- if the drawn line looks
-// mirrored or points the wrong way relative to the hazard, that's the
-// first thing to check.
+// DENM's `location.detectionZonesToEventPosition` (a "Traces" -- SEQUENCE
+// SIZE(1..7) OF PathHistory) traces the physical extent of the hazard/
+// queue behind the event position: each PathPoint is a {deltaLatitude,
+// deltaLongitude} offset in the same 1e-7-degree units as absolute lat/lon
+// (DeltaLatitude/DeltaLongitude in cdd_2_2_1.asn), chained -- each point
+// offset from the previous one, the first offset from the event position
+// itself (cdd_2_2_1.asn's own doc comment on `Path`/`PathHistory` states
+// this explicitly).
+//
+// Sign, CONFIRMED against cdd_2_2_1.asn's DeltaLatitude/DeltaLongitude doc
+// comments (not inferred): a NEGATIVE delta means south/west of the
+// reference point, so each point is `reference + delta`, not `reference -
+// delta` (an earlier version of this function got this backwards, which a
+// real user report confirmed -- the trail rendered "all over the place").
+// Cross-checked against opentrafficmap.org's own frontend (fetched
+// 2026-09-10): its backend already resolves every trace in
+// detectionZonesToEventPosition (not just the first) to absolute [lon,lat]
+// before the frontend ever sees it, and draws one line per trace -- that
+// backend is closed-source (confirmed: cits-to-json, the one public repo
+// in that project, only has the ASN.1 struct definitions for these fields,
+// no resolution logic), so the exact algorithm couldn't be diffed against,
+// but "render every trace, not just the first" was adopted here too.
 const DELTA_UNAVAILABLE = 131072;
 
 function denmQueueTraceFeatures(hazardFeatures) {
@@ -1063,28 +1071,31 @@ function denmQueueTraceFeatures(hazardFeatures) {
 		const p = f.properties;
 		const decoded = safeParseJson(p.decoded_json);
 		const location = decoded && decoded.denm && decoded.denm.location;
-		const trace = location && location.detectionZonesToEventPosition && location.detectionZonesToEventPosition[0];
-		if (!trace || !trace.length) continue;
+		const traces = location && location.detectionZonesToEventPosition;
+		if (!Array.isArray(traces) || !traces.length) continue;
 
-		let lat = parseFloat(p.latitude_deg);
-		let lon = parseFloat(p.longitude_deg);
-		const points = [[lon, lat]];
-		for (const pathPoint of trace) {
-			const pos = pathPoint.pathPosition || {};
-			const dLat = pos.deltaLatitude;
-			const dLon = pos.deltaLongitude;
-			if (dLat === undefined || dLon === undefined || dLat === DELTA_UNAVAILABLE || dLon === DELTA_UNAVAILABLE) break;
-			lat -= dLat / 1e7;
-			lon -= dLon / 1e7;
-			points.push([lon, lat]);
-		}
-		if (points.length > 1) {
-			features.push({
-				type: "Feature",
-				geometry: { type: "LineString", coordinates: points },
-				properties: { originating_station_id: p.originating_station_id, sequence_number: p.sequence_number },
-			});
-		}
+		traces.forEach((trace, traceIndex) => {
+			if (!Array.isArray(trace) || !trace.length) return;
+			let lat = parseFloat(p.latitude_deg);
+			let lon = parseFloat(p.longitude_deg);
+			const points = [[lon, lat]];
+			for (const pathPoint of trace) {
+				const pos = pathPoint.pathPosition || {};
+				const dLat = pos.deltaLatitude;
+				const dLon = pos.deltaLongitude;
+				if (dLat === undefined || dLon === undefined || dLat === DELTA_UNAVAILABLE || dLon === DELTA_UNAVAILABLE) break;
+				lat += dLat / 1e7;
+				lon += dLon / 1e7;
+				points.push([lon, lat]);
+			}
+			if (points.length > 1) {
+				features.push({
+					type: "Feature",
+					geometry: { type: "LineString", coordinates: points },
+					properties: { originating_station_id: p.originating_station_id, sequence_number: p.sequence_number, trace_index: traceIndex },
+				});
+			}
+		});
 	}
 	return features;
 }
@@ -1167,7 +1178,8 @@ async function refresh() {
 		return;
 	}
 
-	const stationFeatures = data.stations.map(stationToFeature);
+	const cpmByStation = new Map((data.cpm || []).map((c) => [c.station_id, c]));
+	const stationFeatures = data.stations.map((s) => stationToFeature(s, cpmByStation));
 	const hazardFeatures = data.hazards.map(hazardToFeature);
 	const geometryFeatures = (data.intersections || []).flatMap(intersectionToLineFeatures);
 	const trafficLightFeatures = trafficLightsToFeatures(data.traffic_lights || []);
@@ -1530,6 +1542,46 @@ function camExtraRows(decodedJson) {
 	return rows;
 }
 
+// CPM perceived-object bearing, from the schema's own East-positive x_m /
+// North-positive y_m convention (cpm_perceived_objects in schema.sql).
+// 0° = north (same reporting station's y-axis), clockwise.
+function bearingDegrees(x, y) {
+	let deg = (Math.atan2(x, y) * 180) / Math.PI;
+	if (deg < 0) deg += 360;
+	return deg;
+}
+
+// CPM detail for the popup: variant/origin plus every perceived object
+// from the sender's latest CPM (p.cpm, from api.php's `cpm` query -- null
+// for a station that hasn't sent one). Objects are relative to the sender
+// (x_m/y_m, not absolute lon/lat -- resolving that needs the sender's
+// heading and an unverified rotation convention the ingester deliberately
+// didn't guess at), so they're shown as distance/bearing rather than
+// plotted as their own markers.
+function cpmExtraRows(cpm) {
+	if (!cpm) return [];
+	const rows = [];
+	if (cpm.asn1_variant) rows.push(["CPM variant", escapeHtml(cpm.asn1_variant)]);
+	if (cpm.origin_kind) rows.push(["CPM origin", escapeHtml(cpm.origin_kind)]);
+	const objects = cpm.objects || [];
+	if (objects.length) {
+		const lines = objects.map((o) => {
+			const x = parseFloat(o.x_m);
+			const y = parseFloat(o.y_m);
+			const hasPos = Number.isFinite(x) && Number.isFinite(y);
+			const parts = [escapeHtml(o.classification || ("object " + o.object_id))];
+			if (hasPos) {
+				const dist = Math.sqrt(x * x + y * y);
+				parts.push(`${dist.toFixed(1)} m @ ${bearingDegrees(x, y).toFixed(0)}°`);
+			}
+			if (o.object_age_ms !== null && o.object_age_ms !== undefined) parts.push(`tracked ${o.object_age_ms} ms`);
+			return parts.join(", ");
+		});
+		rows.push(["Perceived objects", `${objects.length}<br><span class="cpm-objects">${lines.join("<br>")}</span>`]);
+	}
+	return rows;
+}
+
 function stationPopupHtml(p) {
 	const rows = [
 		["Station ID", p.station_id],
@@ -1544,6 +1596,7 @@ function stationPopupHtml(p) {
 		["Trailer", trailerSummary(p.trailer_json)],
 		securityStatusRow(p.gn_json),
 		...camExtraRows(p.decoded_json),
+		...cpmExtraRows(p.cpm),
 		["Device", escapeHtml(p.device_id)],
 		["First seen", relTime(p.first_seen)],
 		["Last seen", relTime(p.last_seen)],
@@ -1588,7 +1641,9 @@ function trafficLightPopupHtml(p) {
 	const groups = safeParseJson(p.groups) || [];
 	const rows = groups.map((g) => {
 		const label = (g.event_state || "unknown").replace(/-/g, " ");
-		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label)];
+		const sec = securityStatus(g.gn_json);
+		const secBadge = sec ? ` <span class="badge" title="${escapeHtml(sec.title)}">${escapeHtml(sec.label)}</span>` : "";
+		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label) + secBadge];
 	});
 	return `<div class="cits-popup">
 		<h3>&#128678; ${escapeHtml(p.name || "Intersection " + p.intersection_id)}</h3>

@@ -334,6 +334,11 @@ html, body {
 	color: #2d3748;
 }
 
+.cpm-objects {
+	font-size: 11px;
+	color: #666;
+}
+
 .cits-popup details {
 	margin-top: 6px;
 }

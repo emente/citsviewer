@@ -194,15 +194,67 @@ $trafficLights = [];
 $sql = "SELECT t.intersection_id, t.region, t.signal_group, t.event_state,
                t.min_end_time, t.max_end_time, t.likely_end_time,
                t.device_id, t.station_id, t.last_received_at,
-               i.name AS intersection_name, i.latitude_deg, i.longitude_deg
+               i.name AS intersection_name, i.latitude_deg, i.longitude_deg,
+               im.gn_json
         FROM traffic_light_states t
         JOIN intersections i ON i.region = t.region AND i.intersection_id = t.intersection_id
+        LEFT JOIN its_messages im ON im.id = (
+            SELECT im2.id FROM its_messages im2
+            WHERE im2.station_id = t.station_id
+            ORDER BY im2.received_at DESC
+            LIMIT 1
+        )
         WHERE t.last_received_at > (UTC_TIMESTAMP() - INTERVAL ? SECOND)";
 if ($stmt = $l->prepare($sql)) {
 	$stmt->bind_param('i', $staleSeconds);
 	$stmt->execute();
 	$trafficLights = fetchAll($stmt->get_result());
 	$stmt->close();
+} else {
+	$schemaMissing = true;
+}
+
+// CPM (Collective Perception): the sender's own position/type is already
+// in `stations` (upserted by store_cpm same as CAM), so this only adds the
+// CPM-specific detail -- variant, origin, and every perceived object from
+// the sender's *latest* CPM. x_m/y_m stay relative offsets from the sender
+// (East/North-positive, see cpm_perceived_objects in schema.sql) rather
+// than being resolved to absolute lon/lat here -- that needs the sender's
+// heading and an unverified rotation convention the ingester deliberately
+// didn't guess at (see its_decoder.extract_cpm_fields' docstring); the
+// frontend shows them as distance/bearing instead of plotting them.
+$cpm = [];
+$sql = "SELECT cm.id, cm.station_id, cm.received_at, cm.asn1_variant, cm.origin_kind
+        FROM cpm_messages cm
+        INNER JOIN (
+            SELECT station_id, MAX(id) AS max_id FROM cpm_messages GROUP BY station_id
+        ) latest ON latest.max_id = cm.id
+        WHERE cm.received_at > (UTC_TIMESTAMP() - INTERVAL ? SECOND)";
+if ($stmt = $l->prepare($sql)) {
+	$stmt->bind_param('i', $windowSeconds);
+	$stmt->execute();
+	$cpm = fetchAll($stmt->get_result());
+	$stmt->close();
+
+	if ($cpm) {
+		$ids = array_map(fn($c) => (int)$c['id'], $cpm);
+		$placeholders = implode(',', array_fill(0, count($ids), '?'));
+		if ($stmt = $l->prepare("SELECT cpm_message_id, object_id, x_m, y_m, z_m,
+		                                 measurement_delta_time_ms, object_age_ms, classification
+		                          FROM cpm_perceived_objects WHERE cpm_message_id IN ($placeholders)")) {
+			$stmt->bind_param(str_repeat('i', count($ids)), ...$ids);
+			$stmt->execute();
+			$objectsByMessage = [];
+			foreach (fetchAll($stmt->get_result()) as $obj) {
+				$objectsByMessage[$obj['cpm_message_id']][] = $obj;
+			}
+			$stmt->close();
+			foreach ($cpm as &$c) {
+				$c['objects'] = $objectsByMessage[$c['id']] ?? [];
+			}
+			unset($c);
+		}
+	}
 } else {
 	$schemaMissing = true;
 }
@@ -264,6 +316,7 @@ $out = [
 	'trail' => $trail,
 	'intersections' => $intersections,
 	'traffic_lights' => $trafficLights,
+	'cpm' => $cpm,
 	'devices' => $devices,
 ];
 if ($schemaMissing) {
