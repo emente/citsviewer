@@ -962,23 +962,19 @@ map.on("load", () => {
 // Connects to mqtt-bridge's optional live-push WebSocket (see WS_URL's own
 // comment) and triggers an immediate refresh() on any message, throttled
 // so a burst of several messages within a second only triggers one fetch.
-// Reconnects with a capped exponential backoff on close/error -- silently
-// gives up trying only in the sense that it keeps retrying forever in the
-// background; polling never stops regardless, so a permanently-unreachable
-// WS_URL just means "no faster than POLL_MS", not a broken page.
-let wsReconnectDelayMs = 1000;
+// Deliberately does NOT auto-reconnect on close/error -- once it drops,
+// it stays dropped (indicator goes red) until the indicator is clicked.
+// Polling keeps running regardless as the reliable fallback either way.
 let wsLastTriggeredRefreshAt = 0;
 let wsSocket = null;
-let wsReconnectTimer = null;
 // Bumped on every connectWebSocket() call, including a manual reconnect
 // click. A socket's own listeners capture the generation they were opened
 // under and no-op if it's since been superseded -- otherwise, manually
-// closing a socket to force a reconnect would ALSO trigger that socket's
-// own "close" handler, which would schedule a second, redundant delayed
-// reconnect racing the immediate one the click already started.
+// closing a socket to force a reconnect would ALSO fire that socket's own
+// "close" handler and stomp on the indicator state of the new connection
+// that click just started.
 let wsGeneration = 0;
 const WS_REFRESH_THROTTLE_MS = 1000;
-const WS_MAX_RECONNECT_DELAY_MS = 30000;
 
 const wsIndicatorEl = document.getElementById("ws-indicator");
 
@@ -1000,10 +996,6 @@ function connectWebSocket() {
 		setWsIndicator("disabled");
 		return;
 	}
-	if (wsReconnectTimer !== null) {
-		clearTimeout(wsReconnectTimer);
-		wsReconnectTimer = null;
-	}
 	const myGeneration = ++wsGeneration;
 	setWsIndicator("connecting");
 	let socket;
@@ -1016,7 +1008,6 @@ function connectWebSocket() {
 	wsSocket = socket;
 	socket.addEventListener("open", () => {
 		if (myGeneration !== wsGeneration) return;
-		wsReconnectDelayMs = 1000;
 		setWsIndicator("connected");
 	});
 	socket.addEventListener("message", () => {
@@ -1030,23 +1021,15 @@ function connectWebSocket() {
 		if (myGeneration !== wsGeneration) return;
 		wsSocket = null;
 		setWsIndicator("closed");
-		wsReconnectTimer = setTimeout(connectWebSocket, wsReconnectDelayMs);
-		wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 2, WS_MAX_RECONNECT_DELAY_MS);
 	});
 	socket.addEventListener("error", () => socket.close());
 }
 
-// Click the indicator to force a reconnect right now, instead of waiting
-// out whatever backoff delay is currently pending -- stopPropagation so
-// this doesn't also trigger the panel's own collapse/expand click handler
-// (the indicator sits inside that same <h1>).
+// Click the indicator to (re)connect -- stopPropagation so this doesn't
+// also trigger the panel's own collapse/expand click handler (the
+// indicator sits inside that same <h1>).
 wsIndicatorEl.addEventListener("click", (e) => {
 	e.stopPropagation();
-	if (wsReconnectTimer !== null) {
-		clearTimeout(wsReconnectTimer);
-		wsReconnectTimer = null;
-	}
-	wsReconnectDelayMs = 1000;
 	if (wsSocket) {
 		const socket = wsSocket;
 		wsSocket = null;
