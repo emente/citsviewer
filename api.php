@@ -348,6 +348,7 @@ $res = $l->query("SELECT d.device_id, d.mac, d.firmware_version, d.hardware_vers
                           ds.temp_c, ds.rssi_dbm, ds.received_at AS stats_received_at,
                           ds.sniffer_uptime_ms, ds.sniffer_sent_packets, ds.sniffer_dropped_packets,
                           ds.sniffer_queued, ds.sniffer_queue_size, ds.sniffer_rssi_dbm, ds.sniffer_age_ms,
+                          ds.sd_found, ds.sd_packets_written,
                           (SELECT COUNT(*) FROM packets p WHERE p.device_id = d.device_id
                               AND p.received_at > (UTC_TIMESTAMP() - INTERVAL 24 HOUR)) AS packets_24h,
                           (SELECT COUNT(*) FROM packets p WHERE p.device_id = d.device_id

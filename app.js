@@ -1467,6 +1467,7 @@ function renderDevices(devices) {
 		if (d.temp_c !== null && d.temp_c !== undefined) telemetryParts.push(`${Number(d.temp_c).toFixed(1)}°C`);
 		if (d.rssi_dbm !== null && d.rssi_dbm !== undefined) telemetryParts.push(`${d.rssi_dbm} dBm`);
 		if (d.sniffer_rssi_dbm !== null && d.sniffer_rssi_dbm !== undefined) telemetryParts.push(`sniffer ${d.sniffer_rssi_dbm} dBm`);
+		if (d.sd_found !== null && d.sd_found !== undefined) telemetryParts.push(toBool(d.sd_found) ? "SD ✓" : "SD ✗");
 		if (d.stats_received_at) telemetryParts.push(`stats ${relTime(d.stats_received_at)}`);
 		const telemetry = telemetryParts.length ? `<div class="device-telemetry">${telemetryParts.join(" &middot; ")}</div>` : "";
 		return `<div class="device" data-device-id="${escapeHtml(d.device_id)}">
@@ -1505,6 +1506,8 @@ function deviceDetailsHtml(d) {
 		["Sniffer queue", (d.sniffer_queued !== null && d.sniffer_queued !== undefined)
 			? `${d.sniffer_queued} / ${d.sniffer_queue_size}` : "-"],
 		["Sniffer RSSI", d.sniffer_rssi_dbm !== null && d.sniffer_rssi_dbm !== undefined ? d.sniffer_rssi_dbm + " dBm" : "-"],
+		["SD card", d.sd_found === null || d.sd_found === undefined ? "-" : (toBool(d.sd_found) ? `<span class="badge">found</span>` : "not found")],
+		["SD packets written", d.sd_packets_written !== null && d.sd_packets_written !== undefined ? d.sd_packets_written : "-"],
 	];
 	return `<div class="cits-popup">
 		<h3>${escapeHtml(d.device_id)}</h3>
