@@ -8,7 +8,7 @@ const PANEL_COLLAPSED_COOKIE = "citsPanelCollapsed";
 const LAYER_VISIBILITY_COOKIE = "citsLayerVisibility";
 const SECTION_COLLAPSED_COOKIE = "citsSectionCollapsed";
 const CLUSTERING_COOKIE = "citsClusteringEnabled";
-const MAX_EXPIRED_HOURS = 48;
+const MAX_EXPIRED_HOURS = 7 * 24;
 
 function apiUrl() {
 	const expiredHours = parseInt(document.getElementById("expired-hours-slider").value, 10) || 0;

@@ -31,8 +31,8 @@ if (!$l) {
 $staleSeconds = isset($_GET['stale']) ? max(5, (int)$_GET['stale']) : 120;
 // How far back to include already-expired/inactive stations and hazards,
 // picked via a slider in the UI. 0 = none (only live items, same as the
-// old "show expired" checkbox unchecked); capped at 48h.
-$expiredHours = isset($_GET['expired_hours']) ? min(48, max(0, (int)$_GET['expired_hours'])) : 0;
+// old "show expired" checkbox unchecked); capped at 7 days.
+$expiredHours = isset($_GET['expired_hours']) ? min(7 * 24, max(0, (int)$_GET['expired_hours'])) : 0;
 $windowSeconds = $expiredHours > 0 ? $expiredHours * 3600 : $staleSeconds;
 
 function fetchAll($res): array {
