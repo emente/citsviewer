@@ -142,6 +142,31 @@ function trafficLightColor(state) {
 	return TRAFFIC_LIGHT_COLORS[state] || "#718096";
 }
 
+// TimeMark (dsrc_2_2_1.asn): tenths of a second into the current OR NEXT
+// UTC hour, 0-36000; 36000 = indefinite future, 36001 = undefined/unknown
+// (both return null here, not "now" or "the top of the hour"). "Current
+// or next" needs disambiguating: resolve against the current hour first,
+// and if that lands meaningfully in the past, it must mean the next hour
+// instead (a SPAT that just arrived would never legitimately name a time
+// already gone).
+function timeMarkToDate(timeMark, referenceDate) {
+	if (timeMark === null || timeMark === undefined || timeMark >= 36000) return null;
+	const ref = referenceDate || new Date();
+	const hourStart = Date.UTC(ref.getUTCFullYear(), ref.getUTCMonth(), ref.getUTCDate(), ref.getUTCHours(), 0, 0, 0);
+	let candidate = hourStart + timeMark * 100;
+	if (candidate < ref.getTime() - 5000) candidate += 3600 * 1000;
+	return new Date(candidate);
+}
+
+function countdownLabel(timeMark, referenceDate) {
+	const date = timeMarkToDate(timeMark, referenceDate);
+	if (!date) return null;
+	const seconds = Math.round((date.getTime() - (referenceDate || new Date()).getTime()) / 1000);
+	if (seconds <= 0) return "now";
+	if (seconds < 60) return seconds + "s";
+	return Math.round(seconds / 60) + "m";
+}
+
 // ---------------------------------------------------------------------------
 // Cookie helpers -- used to remember the last map view (center/zoom/bearing/
 // pitch) and filter checkbox state across reloads/visits, instead of
@@ -182,7 +207,7 @@ panelToggle.addEventListener("click", () => {
 // same pattern as the whole-panel toggle above, with all three remembered
 // together in one cookie keyed by section id.
 const savedSectionCollapsed = readCookie(SECTION_COLLAPSED_COOKIE) || {};
-for (const sectionId of ["stats-section", "devices-section", "legend", "display-section"]) {
+for (const sectionId of ["stats-section", "search-section", "devices-section", "legend", "display-section"]) {
 	const sectionEl = document.getElementById(sectionId);
 	const toggleEl = sectionEl.querySelector(".section-title");
 	if (savedSectionCollapsed[sectionId]) {
@@ -207,9 +232,10 @@ const LAYER_TOGGLES = {
 	"layer-vehicles": ["stations-vehicle-icons", "vehicle-courses-lines"],
 	"layer-rsu": ["stations-rsu-icons"],
 	"layer-denm": ["hazards-icons", "denm-queue-trace-lines"],
-	"layer-traffic-lights": ["traffic-lights-icons"],
+	"layer-traffic-lights": ["traffic-lights-icons", "traffic-lights-countdown"],
 	"layer-geometry": ["geometry-lines"],
 	"layer-trailer": ["trailers-lines"],
+	"layer-receiver-lines": ["receiver-lines-lines"],
 };
 
 const savedLayerVisibility = readCookie(LAYER_VISIBILITY_COOKIE) || {};
@@ -237,6 +263,18 @@ for (const checkboxId of Object.keys(LAYER_TOGGLES)) {
 		applyLayerVisibility();
 	});
 }
+
+const stationSearchInput = document.getElementById("station-search-input");
+const stationSearchClearButton = document.getElementById("station-search-clear");
+stationSearchInput.addEventListener("input", () => {
+	stationSearchText = stationSearchInput.value.trim().toLowerCase();
+	applyStationSearchFilter();
+});
+stationSearchClearButton.addEventListener("click", () => {
+	stationSearchInput.value = "";
+	stationSearchText = "";
+	applyStationSearchFilter();
+});
 
 // ---------------------------------------------------------------------------
 // Icon generation (drawn on canvas, registered as map images -- no external
@@ -469,6 +507,32 @@ const STATION_ICON_PAINT = {
 const STATIONS_CLUSTER_RADIUS = 50;
 const STATIONS_CLUSTER_MAX_ZOOM = 15;
 
+// Station search (MAC substring, case-insensitive) -- a filter on the
+// vehicle/RSU layers themselves (MapLibre's "in" expression does substring
+// matching directly), so it composes with clustering/re-creation with no
+// extra bookkeeping. Clusters themselves are NOT filtered (the clustered
+// source includes every point regardless of what the layer filters draw),
+// so a cluster's count can still include non-matching stations while
+// search is active -- same known simplification as the vehicle/RSU layer
+// split below. The functions here only ever run from event listeners/
+// map.on("load") callbacks, never during the script's own top-to-bottom
+// evaluation, so declaring the variable itself here (rather than up near
+// the other early page-load state) is fine.
+let stationSearchText = "";
+
+function stationLayerFilter(isRsu) {
+	const base = ["all", ["!", ["has", "point_count"]], [isRsu ? "==" : "!=", ["get", "station_type"], 15]];
+	if (stationSearchText) {
+		base.push(["in", stationSearchText, ["downcase", ["get", "macShort"]]]);
+	}
+	return base;
+}
+
+function applyStationSearchFilter() {
+	if (map.getLayer("stations-vehicle-icons")) map.setFilter("stations-vehicle-icons", stationLayerFilter(false));
+	if (map.getLayer("stations-rsu-icons")) map.setFilter("stations-rsu-icons", stationLayerFilter(true));
+}
+
 // (Re)creates the "stations" source and its four dependent layers. Pulled
 // out into its own function because MapLibre's GeoJSON `cluster` option is
 // fixed at source creation -- toggling clustering on/off (the "cluster
@@ -515,7 +579,7 @@ function addStationsSourceAndLayers(cluster) {
 		id: "stations-vehicle-icons",
 		type: "symbol",
 		source: "stations",
-		filter: ["all", ["!", ["has", "point_count"]], ["!=", ["get", "station_type"], 15]],
+		filter: stationLayerFilter(false),
 		layout: STATION_ICON_LAYOUT,
 		paint: STATION_ICON_PAINT,
 	});
@@ -524,7 +588,7 @@ function addStationsSourceAndLayers(cluster) {
 		id: "stations-rsu-icons",
 		type: "symbol",
 		source: "stations",
-		filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "station_type"], 15]],
+		filter: stationLayerFilter(true),
 		layout: STATION_ICON_LAYOUT,
 		paint: STATION_ICON_PAINT,
 	});
@@ -548,9 +612,10 @@ function setStationsClustering(enabled) {
 // ---------------------------------------------------------------------------
 
 const FOCUS_HIDE_LAYERS = [
-	"geometry-lines", "trailers-lines", "traffic-lights-icons", "heatmap-layer",
+	"geometry-lines", "trailers-lines", "traffic-lights-icons", "traffic-lights-countdown", "heatmap-layer",
 	"stations-clusters", "stations-cluster-count", "stations-vehicle-icons",
 	"stations-rsu-icons", "hazards-icons", "vehicle-courses-lines", "denm-queue-trace-lines",
+	"receiver-lines-lines",
 ];
 
 let focusedStationId = null;
@@ -629,6 +694,7 @@ map.on("load", () => {
 	map.addSource("geometry", { type: "geojson", data: emptyFC() });
 	map.addSource("traffic-lights", { type: "geojson", data: emptyFC() });
 	map.addSource("trailers", { type: "geojson", data: emptyFC() });
+	map.addSource("receiver-lines", { type: "geojson", data: emptyFC() });
 	map.addSource("vehicle-courses", { type: "geojson", data: emptyFC() });
 	map.addSource("heatmap", { type: "geojson", data: emptyFC() });
 	map.addSource("focus-trail", { type: "geojson", data: emptyFC() });
@@ -652,6 +718,19 @@ map.on("load", () => {
 			"line-color": "#4299e1",
 			"line-width": 5,
 			"line-opacity": 0.8,
+		},
+	});
+
+	map.addLayer({
+		id: "receiver-lines-lines",
+		type: "line",
+		source: "receiver-lines",
+		layout: { visibility: "none" },
+		paint: {
+			"line-color": "#a0aec0",
+			"line-width": 1.5,
+			"line-opacity": 0.6,
+			"line-dasharray": [3, 2],
 		},
 	});
 
@@ -680,6 +759,30 @@ map.on("load", () => {
 			"circle-radius": 9,
 			"circle-stroke-width": 2,
 			"circle-stroke-color": "#ffffff",
+		},
+	});
+
+	// Countdown to the next phase change, from the same worst-case signal
+	// group driving the marker's color (see trafficLightsToFeatures) --
+	// e.g. a red dot labeled "12s" means "changes (likely to green) in
+	// 12s". A separate symbol layer since circle layers can't carry text.
+	map.addLayer({
+		id: "traffic-lights-countdown",
+		type: "symbol",
+		source: "traffic-lights",
+		layout: {
+			"text-field": ["get", "countdown"],
+			"text-font": ["Noto Sans Bold"],
+			"text-size": 10,
+			"text-offset": [0, 1.1],
+			"text-anchor": "top",
+			"text-allow-overlap": true,
+			"text-optional": true,
+		},
+		paint: {
+			"text-color": "#2d3748",
+			"text-halo-color": "#ffffff",
+			"text-halo-width": 1.4,
 		},
 	});
 
@@ -807,7 +910,7 @@ map.on("load", () => {
 		});
 	});
 
-	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons", "hazards-icons", "stations-clusters", "traffic-lights-icons"]) {
+	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons", "hazards-icons", "stations-clusters", "traffic-lights-icons", "traffic-lights-countdown"]) {
 		map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
 		map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
 	}
@@ -817,7 +920,7 @@ map.on("load", () => {
 			enterFocusMode(e.features[0].properties.station_id);
 		});
 	}
-	for (const layerId of ["hazards-icons", "traffic-lights-icons"]) {
+	for (const layerId of ["hazards-icons", "traffic-lights-icons", "traffic-lights-countdown"]) {
 		map.on("click", layerId, (e) => showPopup(e.features[0], e.point));
 	}
 
@@ -875,6 +978,8 @@ function stationToFeature(s, cpmByStation) {
 			messagesLast5Min: s.messages_last_5min !== null && s.messages_last_5min !== undefined ? parseInt(s.messages_last_5min, 10) : null,
 			trailer_json: s.trailer_json || null,
 			cpm: (cpmByStation && cpmByStation.get(s.station_id)) || null,
+			receiver_latitude_deg: s.receiver_latitude_deg,
+			receiver_longitude_deg: s.receiver_longitude_deg,
 		},
 	};
 }
@@ -924,12 +1029,22 @@ function trafficLightsToFeatures(rows) {
 		byIntersection.get(key).groups.push(row);
 	}
 	const features = [];
+	const now = new Date();
 	for (const isec of byIntersection.values()) {
 		let color = "#718096";
+		let worstGroup = null;
 		for (const g of isec.groups) {
 			const c = trafficLightColor(g.event_state);
-			if (TRAFFIC_LIGHT_RANK[c] > TRAFFIC_LIGHT_RANK[color]) color = c;
+			if (TRAFFIC_LIGHT_RANK[c] > TRAFFIC_LIGHT_RANK[color]) {
+				color = c;
+				worstGroup = g;
+			}
 		}
+		// Countdown label on the marker itself: the same group driving the
+		// marker's color, so a red dot labeled "12s" means "green in 12s"
+		// -- recomputed once per poll (~POLL_MS), not a live per-second
+		// tick, see countdownLabel().
+		const countdown = worstGroup ? countdownLabel(worstGroup.likely_end_time ?? worstGroup.min_end_time, now) : null;
 		features.push({
 			type: "Feature",
 			geometry: { type: "Point", coordinates: [parseFloat(isec.longitude_deg), parseFloat(isec.latitude_deg)] },
@@ -939,6 +1054,7 @@ function trafficLightsToFeatures(rows) {
 				region: isec.region,
 				name: isec.name,
 				color,
+				countdown: countdown || "",
 				groups: JSON.stringify(isec.groups),
 			},
 		});
@@ -995,6 +1111,27 @@ function trailersToFeatures(stations) {
 				},
 			});
 		}
+	}
+	return features;
+}
+
+// One line per station whose receiving device has a known position
+// (devices.latitude_deg/longitude_deg -- set by hand, there's no GPS on
+// the bridge hardware; NULL for most deployments until an operator fills
+// it in, see schema.sql). Off by default (no checked attribute on its
+// checkbox) since it's meaningless clutter until that's done.
+function receiverLineFeatures(stationFeatures) {
+	const features = [];
+	for (const f of stationFeatures) {
+		const p = f.properties;
+		if (p.receiver_latitude_deg === null || p.receiver_latitude_deg === undefined) continue;
+		if (p.receiver_longitude_deg === null || p.receiver_longitude_deg === undefined) continue;
+		const receiver = [parseFloat(p.receiver_longitude_deg), parseFloat(p.receiver_latitude_deg)];
+		features.push({
+			type: "Feature",
+			geometry: { type: "LineString", coordinates: [f.geometry.coordinates, receiver] },
+			properties: { station_id: p.station_id, device_id: p.device_id },
+		});
 	}
 	return features;
 }
@@ -1200,6 +1337,7 @@ async function refresh() {
 	map.getSource("geometry").setData({ type: "FeatureCollection", features: geometryFeatures });
 	map.getSource("traffic-lights").setData({ type: "FeatureCollection", features: trafficLightFeatures });
 	map.getSource("trailers").setData({ type: "FeatureCollection", features: trailerFeatures });
+	map.getSource("receiver-lines").setData({ type: "FeatureCollection", features: receiverLineFeatures(stationFeatures) });
 	map.getSource("heatmap").setData({ type: "FeatureCollection", features: heatmapFeatures });
 	map.getSource("vehicle-courses").setData({ type: "FeatureCollection", features: courseFeaturesList });
 
@@ -1639,11 +1777,14 @@ function hazardPopupHtml(p) {
 
 function trafficLightPopupHtml(p) {
 	const groups = safeParseJson(p.groups) || [];
+	const now = new Date();
 	const rows = groups.map((g) => {
 		const label = (g.event_state || "unknown").replace(/-/g, " ");
 		const sec = securityStatus(g.gn_json);
 		const secBadge = sec ? ` <span class="badge" title="${escapeHtml(sec.title)}">${escapeHtml(sec.label)}</span>` : "";
-		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label) + secBadge];
+		const countdown = countdownLabel(g.likely_end_time ?? g.min_end_time, now);
+		const countdownText = countdown ? ` <span class="expired-tag">(changes in ${escapeHtml(countdown)})</span>` : "";
+		return [`Group ${escapeHtml(String(g.signal_group))}`, escapeHtml(label) + secBadge + countdownText];
 	});
 	return `<div class="cits-popup">
 		<h3>&#128678; ${escapeHtml(p.name || "Intersection " + p.intersection_id)}</h3>

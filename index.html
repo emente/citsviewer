@@ -25,6 +25,16 @@
 				<div id="updated">never updated</div>
 			</div>
 		</div>
+		<div id="search-section" class="section">
+			<div class="section-title" id="search-toggle">Search <span class="section-caret">&#9662;</span></div>
+			<div id="search-body" class="section-body">
+				<div id="station-search-row">
+					<input type="search" id="station-search-input" autocomplete="off" placeholder="MAC address">
+					<button id="station-search-clear" type="button" title="Clear search">&times;</button>
+				</div>
+				<div id="station-search-hint">Matching vehicles/RSUs stay shown; everything else fades out.</div>
+			</div>
+		</div>
 		<div id="devices-section" class="section">
 			<div class="section-title" id="devices-toggle">Sensors <span class="section-caret">&#9662;</span></div>
 			<div id="devices-body" class="section-body">
@@ -44,6 +54,7 @@
 				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-traffic-lights" checked><span class="legend-swatch swatch-traffic-light"></span>traffic lights (SPATEM)</label>
 				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-geometry" checked><span class="legend-swatch swatch-geometry"></span>lane geometry (MAPEM)</label>
 				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-trailer" checked><span class="legend-swatch swatch-trailer"></span>trailers (CPM)</label>
+				<label class="legend-row layer-toggle"><input type="checkbox" id="layer-receiver-lines"><span class="legend-swatch swatch-receiver"></span>lines to receiver</label>
 			</div>
 		</div>
 		<div id="display-section" class="section">

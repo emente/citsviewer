@@ -64,6 +64,7 @@ $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
                (s.last_seen <= (UTC_TIMESTAMP() - INTERVAL ? SECOND)) AS is_stale,
                im.source_mac, im.message_type AS latest_message_type,
                im.protocol_version, im.decoded_json, im.gn_json,
+               dv.latitude_deg AS receiver_latitude_deg, dv.longitude_deg AS receiver_longitude_deg,
                (SELECT COUNT(*) FROM cam_messages cm WHERE cm.station_id = s.station_id) AS message_count,
                (SELECT COUNT(*) FROM cam_messages cm WHERE cm.station_id = s.station_id
                    AND cm.received_at > (UTC_TIMESTAMP() - INTERVAL 5 MINUTE)) AS messages_last_5min
@@ -74,6 +75,7 @@ $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
             ORDER BY im2.received_at DESC
             LIMIT 1
         )
+        LEFT JOIN devices dv ON dv.device_id = s.device_id
         WHERE s.last_seen > (UTC_TIMESTAMP() - INTERVAL ? SECOND)";
 if ($stmt = $l->prepare($sql)) {
 	$stmt->bind_param('ii', $staleSeconds, $windowSeconds);
@@ -267,6 +269,7 @@ if ($stmt = $l->prepare($sql)) {
 $devices = [];
 $res = $l->query("SELECT d.device_id, d.mac, d.firmware_version, d.hardware_version,
                           d.last_status, d.last_status_at, d.last_seen,
+                          d.latitude_deg, d.longitude_deg,
                           ds.temp_c, ds.rssi_dbm, ds.received_at AS stats_received_at,
                           ds.sniffer_uptime_ms, ds.sniffer_sent_packets, ds.sniffer_dropped_packets,
                           ds.sniffer_queued, ds.sniffer_queue_size, ds.sniffer_rssi_dbm, ds.sniffer_age_ms,

@@ -165,6 +165,46 @@ html, body {
 	margin-bottom: 8px;
 }
 
+#station-search-row {
+	display: flex;
+	gap: 4px;
+}
+
+#station-search-input {
+	flex: 1;
+	min-width: 0;
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 4px;
+	color: #e8e8e8;
+	padding: 4px 6px;
+	font-size: 12px;
+}
+
+#station-search-input::placeholder {
+	color: #9aa0a6;
+}
+
+#station-search-clear {
+	background: transparent;
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 4px;
+	color: #cfd3d8;
+	cursor: pointer;
+	font-size: 13px;
+	padding: 0 8px;
+}
+
+#station-search-clear:hover {
+	background: rgba(255, 255, 255, 0.08);
+}
+
+#station-search-hint {
+	font-size: 10.5px;
+	color: #9aa0a6;
+	margin-top: 4px;
+}
+
 #expired-toggle label {
 	display: block;
 	margin-bottom: 4px;
@@ -286,6 +326,7 @@ html, body {
 .swatch-traffic-light { background: #48bb78; }
 .swatch-geometry { background: #ed8936; }
 .swatch-trailer { background: #4299e1; }
+.swatch-receiver { background: #a0aec0; }
 
 .layer-toggle {
 	cursor: pointer;
