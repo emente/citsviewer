@@ -67,7 +67,16 @@ $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
                dv.latitude_deg AS receiver_latitude_deg, dv.longitude_deg AS receiver_longitude_deg,
                (SELECT COUNT(*) FROM cam_messages cm WHERE cm.station_id = s.station_id) AS message_count,
                (SELECT COUNT(*) FROM cam_messages cm WHERE cm.station_id = s.station_id
-                   AND cm.received_at > (UTC_TIMESTAMP() - INTERVAL 5 MINUTE)) AS messages_last_5min
+                   AND cm.received_at > (UTC_TIMESTAMP() - INTERVAL 5 MINUTE)) AS messages_last_5min,
+               -- Other station_id sessions sharing this same 802.11 MAC --
+               -- e.g. a pseudonym/station-ID change on an otherwise
+               -- unchanged physical device. Just a count here (cheap-ish,
+               -- known already via im.source_mac); the popup's also-seen-on
+               -- link only renders when this is > 0, and its own list is
+               -- fetched lazily like station_history is, see api.php's
+               -- station_id-triggered block below.
+               (SELECT COUNT(DISTINCT im3.station_id) FROM its_messages im3
+                   WHERE im3.source_mac = im.source_mac AND im3.station_id != s.station_id) AS other_sightings_count
         FROM stations s
         LEFT JOIN its_messages im ON im.id = (
             SELECT im2.id FROM its_messages im2
@@ -140,6 +149,44 @@ if (isset($_GET['station_id'])) {
 		$stmt->close();
 	} else {
 		$schemaMissing = true;
+	}
+}
+
+// Other sessions of the same physical device (802.11 MAC) -- "also seen
+// on" in the popup, e.g. after a pseudonym/station-ID change. Same
+// on-demand trigger as $trail/$stationHistory above (the frontend fetches
+// all three together); the mac itself comes from this station's own most
+// recent its_messages row, same source as the popup's own "MAC" field.
+$otherSightings = [];
+if (isset($_GET['station_id'])) {
+	$stationId = (int)$_GET['station_id'];
+	$mac = null;
+	if ($stmt = $l->prepare("SELECT source_mac FROM its_messages
+	                          WHERE station_id = ? AND source_mac IS NOT NULL
+	                          ORDER BY received_at DESC LIMIT 1")) {
+		$stmt->bind_param('i', $stationId);
+		$stmt->execute();
+		$row = $stmt->get_result()->fetch_assoc();
+		$stmt->close();
+		$mac = $row['source_mac'] ?? null;
+	} else {
+		$schemaMissing = true;
+	}
+	if ($mac !== null) {
+		if ($stmt = $l->prepare("SELECT station_id, MIN(received_at) AS first_seen, MAX(received_at) AS last_seen,
+		                                 COUNT(*) AS message_count
+		                          FROM its_messages
+		                          WHERE source_mac = ? AND station_id != ?
+		                          GROUP BY station_id
+		                          ORDER BY MAX(received_at) DESC
+		                          LIMIT 50")) {
+			$stmt->bind_param('si', $mac, $stationId);
+			$stmt->execute();
+			$otherSightings = fetchAll($stmt->get_result());
+			$stmt->close();
+		} else {
+			$schemaMissing = true;
+		}
 	}
 }
 
@@ -395,6 +442,7 @@ $out = [
 	'courses' => $courses,
 	'trail' => $trail,
 	'station_history' => $stationHistory,
+	'other_sightings' => $otherSightings,
 	'tl_stats' => $tlStats,
 	'intersections' => $intersections,
 	'traffic_lights' => $trafficLights,

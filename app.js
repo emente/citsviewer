@@ -616,10 +616,14 @@ function setStationsClustering(enabled) {
 }
 
 // ---------------------------------------------------------------------------
-// Focus mode -- clicking a vehicle/RSU hides every other layer and shows
-// that station's full received history (its CAM trail) instead, so it's
-// not lost among everything else on the map. "Show all" (the banner
-// button) restores the normal view.
+// Focus mode -- opt-in via the "Just show this route" checkbox in a
+// vehicle/RSU's popup (NOT automatic on click, that's the reversed-from-
+// before behaviour): hides every other layer and shows that station's
+// full received history (its CAM trail) instead, so it's not lost among
+// everything else on the map. Unchecking the box, or closing the popup
+// entirely (see closeFloatingPopup), restores the normal view. Never
+// touches the map's position/zoom either way -- entering or leaving focus
+// is purely a layer-visibility change.
 // ---------------------------------------------------------------------------
 
 const FOCUS_HIDE_LAYERS = [
@@ -638,9 +642,7 @@ function enterFocusMode(stationId) {
 	}
 	map.setLayoutProperty("focus-trail-line", "visibility", "visible");
 	map.setLayoutProperty("focus-trail-points", "visibility", "visible");
-	document.getElementById("focus-banner-text").textContent = "Showing full history for station " + stationId;
-	document.getElementById("focus-banner").hidden = false;
-	updateFocusTrail(true);
+	updateFocusTrail();
 }
 
 // No snapshot/restore bookkeeping needed: every hidden layer is either
@@ -650,7 +652,6 @@ function enterFocusMode(stationId) {
 // always visible outside focus mode.
 function exitFocusMode() {
 	focusedStationId = null;
-	document.getElementById("focus-banner").hidden = true;
 	map.setLayoutProperty("focus-trail-line", "visibility", "none");
 	map.setLayoutProperty("focus-trail-points", "visibility", "none");
 	map.getSource("focus-trail").setData(emptyFC());
@@ -667,8 +668,9 @@ function exitFocusMode() {
 // position packet it has sent, per schema.sql's own description of
 // cam_messages as the append-only trail/playback table. Piggybacks on the
 // same POLL_MS cadence as the main refresh() (see there) rather than its
-// own timer, so the trail keeps growing live while focused.
-async function updateFocusTrail(fitBounds) {
+// own timer, so the trail keeps growing live while focused. Never moves
+// the map -- no fitBounds here, by design (see this section's own comment).
+async function updateFocusTrail() {
 	if (focusedStationId === null) return;
 	let data;
 	try {
@@ -685,15 +687,7 @@ async function updateFocusTrail(fitBounds) {
 		features.push({ type: "Feature", geometry: { type: "LineString", coordinates: points }, properties: {} });
 	}
 	map.getSource("focus-trail").setData({ type: "FeatureCollection", features });
-
-	if (fitBounds && points.length > 0) {
-		const bounds = new maplibregl.LngLatBounds();
-		for (const c of points) bounds.extend(c);
-		map.fitBounds(bounds, { padding: 60, maxZoom: 17, duration: 600 });
-	}
 }
-
-document.getElementById("focus-banner-exit").addEventListener("click", exitFocusMode);
 
 map.on("load", () => {
 	registerIcons(map);
@@ -943,13 +937,7 @@ map.on("load", () => {
 		map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
 		map.on("mouseleave", layerId, () => { map.getCanvas().style.cursor = ""; });
 	}
-	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons"]) {
-		map.on("click", layerId, (e) => {
-			showPopup(e.features[0], e.point);
-			enterFocusMode(e.features[0].properties.station_id);
-		});
-	}
-	for (const layerId of ["hazards-icons", "traffic-lights-icons", "traffic-lights-countdown"]) {
+	for (const layerId of ["stations-vehicle-icons", "stations-rsu-icons", "hazards-icons", "traffic-lights-icons", "traffic-lights-countdown"]) {
 		map.on("click", layerId, (e) => showPopup(e.features[0], e.point));
 	}
 
@@ -1558,7 +1546,7 @@ async function refresh() {
 		map.fitBounds(bounds, { padding: 60, maxZoom: 16, duration: 600 });
 	}
 
-	if (focusedStationId !== null) updateFocusTrail(false);
+	if (focusedStationId !== null) updateFocusTrail();
 }
 
 let latestDevices = [];
@@ -1626,11 +1614,18 @@ function deviceDetailsHtml(d) {
 
 let floatingPopupEl = null;
 
-function closeFloatingPopup() {
+// `userClosed` distinguishes an actual close (X button, click outside) from
+// showFloatingPopupAt's internal call to clear the way for a replacement
+// popup -- only a real close should turn off "just show this route", since
+// otherwise reopening the same station's popup (or opening another one
+// while it's checked) would silently exit focus mode out from under a
+// checkbox that still renders as checked.
+function closeFloatingPopup(userClosed) {
 	if (floatingPopupEl) {
 		floatingPopupEl.remove();
 		floatingPopupEl = null;
 	}
+	if (userClosed && focusedStationId !== null) exitFocusMode();
 }
 
 // Every info popup (device, station, hazard, traffic light) is this same
@@ -1666,7 +1661,7 @@ function showFloatingPopupAt(x, y, html) {
 		document.addEventListener("mousemove", onMove);
 		document.addEventListener("mouseup", onUp);
 	});
-	bar.querySelector(".floating-popup-close").addEventListener("click", closeFloatingPopup);
+	bar.querySelector(".floating-popup-close").addEventListener("click", () => closeFloatingPopup(true));
 
 	// Popup content that needs its own network fetch (station message
 	// history, traffic-light stats) loads lazily -- wired up here, once,
@@ -1681,12 +1676,32 @@ function showFloatingPopupAt(x, y, html) {
 			}
 		});
 	}
+	const sightingsDetails = floatingPopupEl.querySelector(".other-sightings");
+	if (sightingsDetails) {
+		sightingsDetails.addEventListener("toggle", () => {
+			if (sightingsDetails.open && !sightingsDetails.dataset.loaded) {
+				sightingsDetails.dataset.loaded = "1";
+				loadOtherSightings(sightingsDetails, sightingsDetails.dataset.stationId);
+			}
+		});
+	}
 	floatingPopupEl.querySelectorAll(".tl-stats-link").forEach((link) => {
 		link.addEventListener("click", (e) => {
 			e.preventDefault();
 			loadTlStats(link);
 		});
 	});
+
+	const focusToggle = floatingPopupEl.querySelector(".focus-toggle");
+	if (focusToggle) {
+		focusToggle.addEventListener("change", () => {
+			if (focusToggle.checked) {
+				enterFocusMode(Number(focusToggle.dataset.stationId));
+			} else {
+				exitFocusMode();
+			}
+		});
+	}
 
 	return floatingPopupEl;
 }
@@ -1710,7 +1725,7 @@ document.getElementById("devices").addEventListener("click", (e) => {
 // opened.
 document.addEventListener("click", (e) => {
 	if (floatingPopupEl && !floatingPopupEl.contains(e.target) && !e.target.closest(".device") && !e.target.closest("#map")) {
-		closeFloatingPopup();
+		closeFloatingPopup(true);
 	}
 });
 
@@ -1973,13 +1988,19 @@ function stationPopupHtml(p) {
 	];
 	const json = prettyJson(p.decoded_json);
 	const staleTag = p.isStale ? ` <span class="expired-tag">(expired)</span>` : "";
+	const focusChecked = focusedStationId === p.station_id ? " checked" : "";
 	return `<div class="cits-popup">
 		<h3>${escapeHtml(p.station_type_name)} &middot; ${escapeHtml(p.mac || "station " + p.station_id)}${staleTag}</h3>
+		<label class="focus-toggle-row"><input type="checkbox" class="focus-toggle" data-station-id="${escapeHtml(String(p.station_id))}"${focusChecked}> Just show this route (hides everything else)</label>
 		<table>${rows.map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("")}</table>
 		<details class="station-history" data-station-id="${escapeHtml(String(p.station_id))}">
 			<summary>Message history</summary>
 			<div class="station-history-body">loading&hellip;</div>
 		</details>
+		${p.other_sightings_count ? `<details class="other-sightings" data-station-id="${escapeHtml(String(p.station_id))}">
+			<summary>Also seen on&hellip; (${p.other_sightings_count})</summary>
+			<div class="other-sightings-body">loading&hellip;</div>
+		</details>` : ""}
 		${json ? `<details><summary>Raw decoded message</summary><pre>${escapeHtml(json)}</pre></details>` : ""}
 	</div>`;
 }
@@ -2006,6 +2027,36 @@ async function loadStationHistory(detailsEl, stationId) {
 		const errTag = r.decode_error ? ` <span class="expired-tag" title="${escapeHtml(r.decode_error)}">(decode error)</span>` : "";
 		return `<div>${escapeHtml(relTime(r.received_at))} &middot; ${escapeHtml((r.message_type || "?").toUpperCase())}${errTag}</div>`;
 	}).join("");
+}
+
+// Other station_id sessions seen under the same 802.11 MAC (e.g. a
+// pseudonym/station-ID change) -- lazy-loaded the same way
+// loadStationHistory is, see showFloatingPopupAt's wiring of the
+// ".other-sightings" <details> toggle. Clicking an entry reuses focus mode
+// (see enterFocusMode) to draw that other session's own route, exactly as
+// if its "just show this route" checkbox had been checked -- there's no
+// separate rendering path for it.
+async function loadOtherSightings(detailsEl, stationId) {
+	const body = detailsEl.querySelector(".other-sightings-body");
+	let data;
+	try {
+		const res = await fetch("api.php?station_id=" + encodeURIComponent(stationId), { cache: "no-store" });
+		data = await res.json();
+	} catch (err) {
+		body.textContent = "Failed to load.";
+		return;
+	}
+	const rows = data.other_sightings || [];
+	if (!rows.length) {
+		body.textContent = "No other sightings found.";
+		return;
+	}
+	body.innerHTML = rows.map((r) => {
+		return `<div class="other-sighting-row" data-station-id="${escapeHtml(String(r.station_id))}">${escapeHtml(relTime(r.first_seen))} &ndash; ${escapeHtml(relTime(r.last_seen))} &middot; ${escapeHtml(String(r.message_count))} msgs &middot; station ${escapeHtml(String(r.station_id))}</div>`;
+	}).join("");
+	body.querySelectorAll(".other-sighting-row").forEach((row) => {
+		row.addEventListener("click", () => enterFocusMode(Number(row.dataset.stationId)));
+	});
 }
 
 function hazardPopupHtml(p) {
