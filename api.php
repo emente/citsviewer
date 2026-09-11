@@ -70,13 +70,19 @@ $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
                    AND cm.received_at > (UTC_TIMESTAMP() - INTERVAL 5 MINUTE)) AS messages_last_5min,
                -- Other station_id sessions sharing this same 802.11 MAC --
                -- e.g. a pseudonym/station-ID change on an otherwise
-               -- unchanged physical device. Just a count here (cheap-ish,
-               -- known already via im.source_mac); the popup's also-seen-on
-               -- link only renders when this is > 0, and its own list is
-               -- fetched lazily like station_history is, see api.php's
-               -- station_id-triggered block below.
-               (SELECT COUNT(DISTINCT im3.station_id) FROM its_messages im3
-                   WHERE im3.source_mac = im.source_mac AND im3.station_id != s.station_id) AS other_sightings_count
+               -- unchanged physical device. macstats.n_sids counts every
+               -- distinct station_id ever seen under that mac, including
+               -- this station's own -- hence the -1. Computed as a single
+               -- GROUP BY over its_messages (one scan total, backed by
+               -- idx_its_messages_mac, see schema.sql) and joined in, not a
+               -- per-row correlated subquery -- that was the original
+               -- version of this and re-scanned its_messages once per
+               -- station on every poll, which doesn't stay cheap since
+               -- its_messages is an unbounded, ever-growing log. The
+               -- popup's also-seen-on link only renders when this is > 0,
+               -- and its own list is fetched lazily like station_history
+               -- is, see api.php's station_id-triggered block below.
+               GREATEST(COALESCE(macstats.n_sids, 1) - 1, 0) AS other_sightings_count
         FROM stations s
         LEFT JOIN its_messages im ON im.id = (
             SELECT im2.id FROM its_messages im2
@@ -85,6 +91,12 @@ $sql = "SELECT s.station_id, s.device_id, s.station_type, s.last_message_type,
             LIMIT 1
         )
         LEFT JOIN devices dv ON dv.device_id = s.device_id
+        LEFT JOIN (
+            SELECT source_mac, COUNT(DISTINCT station_id) AS n_sids
+            FROM its_messages
+            WHERE source_mac IS NOT NULL
+            GROUP BY source_mac
+        ) macstats ON macstats.source_mac = im.source_mac
         WHERE s.last_seen > (UTC_TIMESTAMP() - INTERVAL ? SECOND)";
 if ($stmt = $l->prepare($sql)) {
 	$stmt->bind_param('ii', $staleSeconds, $windowSeconds);

@@ -240,8 +240,8 @@ for (const sectionId of ["stats-section", "search-section", "devices-section", "
 // ---------------------------------------------------------------------------
 
 const LAYER_TOGGLES = {
-	"layer-vehicles": ["stations-vehicle-icons", "vehicle-courses-lines", "cam-path-history-lines"],
-	"layer-rsu": ["stations-rsu-icons"],
+	"layer-vehicles": ["stations-vehicle-icons", "stations-vehicle-sightings-halo", "vehicle-courses-lines", "cam-path-history-lines"],
+	"layer-rsu": ["stations-rsu-icons", "stations-rsu-sightings-halo"],
 	"layer-denm": ["hazards-icons", "denm-queue-trace-lines"],
 	"layer-traffic-lights": ["traffic-lights-icons", "traffic-lights-countdown"],
 	"layer-geometry": ["geometry-lines"],
@@ -515,6 +515,18 @@ const STATION_ICON_PAINT = {
 	"text-halo-width": 1.4,
 	"text-opacity": ["case", ["get", "isStale"], 0.4, 1],
 };
+
+// Ring drawn under a vehicle/RSU icon when it has "other sightings" (see
+// other_sightings_count / the popup's "also seen on" link) -- gold rather
+// than any color already used elsewhere on the map (blue vehicles, purple
+// RSUs, red hazards, green traffic lights, orange geometry, cyan trailers).
+const STATION_HALO_PAINT = {
+	"circle-radius": 13,
+	"circle-color": "transparent",
+	"circle-stroke-width": 2.5,
+	"circle-stroke-color": "#d69e2e",
+	"circle-stroke-opacity": ["case", ["get", "isStale"], 0.4, 1],
+};
 const STATIONS_CLUSTER_RADIUS = 50;
 const STATIONS_CLUSTER_MAX_ZOOM = 15;
 
@@ -539,9 +551,18 @@ function stationLayerFilter(isRsu) {
 	return base;
 }
 
+// Same as stationLayerFilter, plus "has other sightings" -- used by the two
+// halo layers below rather than baked into stationLayerFilter itself, so
+// the vehicle/RSU icon layers stay unaffected.
+function stationHaloFilter(isRsu) {
+	return [...stationLayerFilter(isRsu), [">", ["get", "other_sightings_count"], 0]];
+}
+
 function applyStationSearchFilter() {
 	if (map.getLayer("stations-vehicle-icons")) map.setFilter("stations-vehicle-icons", stationLayerFilter(false));
 	if (map.getLayer("stations-rsu-icons")) map.setFilter("stations-rsu-icons", stationLayerFilter(true));
+	if (map.getLayer("stations-vehicle-sightings-halo")) map.setFilter("stations-vehicle-sightings-halo", stationHaloFilter(false));
+	if (map.getLayer("stations-rsu-sightings-halo")) map.setFilter("stations-rsu-sightings-halo", stationHaloFilter(true));
 }
 
 // (Re)creates the "stations" source and its four dependent layers. Pulled
@@ -586,6 +607,19 @@ function addStationsSourceAndLayers(cluster) {
 	// legend checkbox. Clusters themselves stay mixed (a cluster can
 	// contain both types); an acceptable simplification since RSUs are
 	// rare next to vehicles.
+	//
+	// The halo layers are added first so they render underneath their
+	// matching icon layer, and share that layer's visibility/search
+	// filtering (see LAYER_TOGGLES and applyStationSearchFilter) rather
+	// than being their own separately-toggleable legend entry.
+	map.addLayer({
+		id: "stations-vehicle-sightings-halo",
+		type: "circle",
+		source: "stations",
+		filter: stationHaloFilter(false),
+		paint: STATION_HALO_PAINT,
+	});
+
 	map.addLayer({
 		id: "stations-vehicle-icons",
 		type: "symbol",
@@ -593,6 +627,14 @@ function addStationsSourceAndLayers(cluster) {
 		filter: stationLayerFilter(false),
 		layout: STATION_ICON_LAYOUT,
 		paint: STATION_ICON_PAINT,
+	});
+
+	map.addLayer({
+		id: "stations-rsu-sightings-halo",
+		type: "circle",
+		source: "stations",
+		filter: stationHaloFilter(true),
+		paint: STATION_HALO_PAINT,
 	});
 
 	map.addLayer({
@@ -606,7 +648,7 @@ function addStationsSourceAndLayers(cluster) {
 }
 
 function setStationsClustering(enabled) {
-	for (const layerId of ["stations-clusters", "stations-cluster-count", "stations-vehicle-icons", "stations-rsu-icons"]) {
+	for (const layerId of ["stations-clusters", "stations-cluster-count", "stations-vehicle-sightings-halo", "stations-vehicle-icons", "stations-rsu-sightings-halo", "stations-rsu-icons"]) {
 		if (map.getLayer(layerId)) map.removeLayer(layerId);
 	}
 	if (map.getSource("stations")) map.removeSource("stations");
@@ -628,8 +670,8 @@ function setStationsClustering(enabled) {
 
 const FOCUS_HIDE_LAYERS = [
 	"geometry-lines", "trailers-lines", "traffic-lights-icons", "traffic-lights-countdown", "heatmap-layer",
-	"stations-clusters", "stations-cluster-count", "stations-vehicle-icons",
-	"stations-rsu-icons", "hazards-icons", "vehicle-courses-lines", "denm-queue-trace-lines",
+	"stations-clusters", "stations-cluster-count", "stations-vehicle-icons", "stations-vehicle-sightings-halo",
+	"stations-rsu-icons", "stations-rsu-sightings-halo", "hazards-icons", "vehicle-courses-lines", "denm-queue-trace-lines",
 	"receiver-lines-lines", "cam-path-history-lines",
 ];
 
@@ -1076,6 +1118,7 @@ function stationToFeature(s, cpmByStation) {
 			cpm: (cpmByStation && cpmByStation.get(s.station_id)) || null,
 			receiver_latitude_deg: s.receiver_latitude_deg,
 			receiver_longitude_deg: s.receiver_longitude_deg,
+			other_sightings_count: s.other_sightings_count !== null && s.other_sightings_count !== undefined ? parseInt(s.other_sightings_count, 10) : 0,
 		},
 	};
 }
